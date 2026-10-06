@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cctype>
 #include <charconv>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -18,6 +19,7 @@
 #include <unordered_map>
 
 #include <CLI/CLI.hpp>
+#include <fmt/format.h>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -135,6 +137,159 @@ void ApplyTomlTable(const toml::table& table, const std::string& prefix) {
       }
     }
   }
+}
+
+// What went wrong loading the config. The config loads before logging starts,
+// so these wait for LogConfigProblems.
+std::vector<std::string>& GetConfigProblems() {
+  static std::vector<std::string> problems;
+  return problems;
+}
+
+// A TOML basic string: quoted, with backslashes, quotes and control characters
+// escaped (Windows paths are full of backslashes).
+std::string TomlString(std::string_view text) {
+  std::string result = "\"";
+  for (char c : text) {
+    switch (c) {
+      case '\\':
+        result += "\\\\";
+        break;
+      case '"':
+        result += "\\\"";
+        break;
+      case '\n':
+        result += "\\n";
+        break;
+      case '\r':
+        result += "\\r";
+        break;
+      case '\t':
+        result += "\\t";
+        break;
+      default:
+        if (static_cast<unsigned char>(c) < 0x20 || c == 0x7F) {
+          char escaped[8];
+          std::snprintf(escaped, sizeof(escaped), "\\u%04X", static_cast<unsigned char>(c));
+          result += escaped;
+        } else {
+          result += c;
+        }
+    }
+  }
+  return result + "\"";
+}
+
+std::string FormatTomlValue(const toml::node& value) {
+  if (value.is_string()) {
+    return TomlString(value.as_string()->get());
+  }
+  if (value.is_boolean()) {
+    return value.as_boolean()->get() ? "true" : "false";
+  }
+  if (value.is_integer()) {
+    return std::to_string(value.as_integer()->get());
+  }
+  if (value.is_floating_point()) {
+    return std::to_string(value.as_floating_point()->get());
+  }
+  return {};
+}
+
+std::string_view Trim(std::string_view text) {
+  while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) {
+    text.remove_prefix(1);
+  }
+  while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) {
+    text.remove_suffix(1);
+  }
+  return text;
+}
+
+// Parses one "key = value" line on its own. A basic string with backslashes
+// that aren't escapes (a Windows path, as older versions saved them) is read
+// literally rather than lost.
+std::optional<toml::table> ParseConfigLine(std::string_view line) {
+  try {
+    return toml::parse(line);
+  } catch (const toml::parse_error&) {
+  }
+  size_t equals = line.find('=');
+  if (equals == std::string_view::npos) {
+    return std::nullopt;
+  }
+  std::string_view value = Trim(line.substr(equals + 1));
+  if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+    std::string_view text = value.substr(1, value.size() - 2);
+    if (text.find('\'') == std::string_view::npos && text.find('"') == std::string_view::npos) {
+      std::string literal = std::string(line.substr(0, equals + 1)) + " '" + std::string(text) + "'";
+      try {
+        return toml::parse(literal);
+      } catch (const toml::parse_error&) {
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+// A config TOML can't parse as a whole, line by line: each "key = value" (in its
+// [table]) that parses on its own. Returns the lines that don't.
+template <typename Callback>
+std::vector<size_t> ForEachConfigLine(const std::filesystem::path& config_path,
+                                      Callback&& callback) {
+  std::vector<size_t> bad_lines;
+  std::ifstream file(config_path);
+  std::string table;
+  std::string line;
+  for (size_t number = 1; std::getline(file, line); ++number) {
+    std::string_view text = Trim(line);
+    if (text.empty() || text.front() == '#') {
+      continue;
+    }
+    if (text.front() == '[') {
+      size_t end = text.find(']');
+      table = end == std::string_view::npos ? std::string() : std::string(Trim(text.substr(1, end - 1)));
+      continue;
+    }
+    std::optional<toml::table> parsed = ParseConfigLine(text);
+    if (!parsed) {
+      bad_lines.push_back(number);
+      continue;
+    }
+    callback(*parsed, table);
+  }
+  return bad_lines;
+}
+
+// Values from the command line or the environment are this launch's overrides,
+// not settings to keep.
+bool IsLaunchOverride(const FlagEntry& entry) {
+  return entry.source == Source::kCommandLine || entry.source == Source::kEnvironment;
+}
+
+// The modified flags as TOML (only the category's, if given); the flags skipped
+// as launch overrides go to `overridden`.
+std::string SerializeFlags(std::optional<std::string_view> category,
+                           std::vector<std::string>* overridden) {
+  std::lock_guard lock(GetRegistryMutex());
+  std::string result;
+  for (const auto& entry : GetRegistryStorage()) {
+    if ((category && entry.category != *category) || entry.is_transient) {
+      continue;
+    }
+    if (IsLaunchOverride(entry)) {
+      if (overridden) {
+        overridden->push_back(entry.name);
+      }
+      continue;
+    }
+    std::string value = entry.getter();
+    if (value == entry.default_value) {
+      continue;
+    }
+    result += entry.name + " = " + (entry.type == FlagType::String ? TomlString(value) : value) + "\n";
+  }
+  return result;
 }
 
 // todo(tomc): move restart manager to Runtime
@@ -536,33 +691,11 @@ std::vector<std::string> ListModifiedFlags() {
 }
 
 std::string SerializeToTOML() {
-  std::lock_guard lock(GetRegistryMutex());
-  std::string result;
-  for (const auto& entry : GetRegistryStorage()) {
-    if (entry.getter() != entry.default_value) {
-      if (entry.type == FlagType::String) {
-        result += entry.name + " = \"" + entry.getter() + "\"\n";
-      } else {
-        result += entry.name + " = " + entry.getter() + "\n";
-      }
-    }
-  }
-  return result;
+  return SerializeFlags(std::nullopt, nullptr);
 }
 
 std::string SerializeToTOML(std::string_view category) {
-  std::lock_guard lock(GetRegistryMutex());
-  std::string result;
-  for (const auto& entry : GetRegistryStorage()) {
-    if (entry.category == category && entry.getter() != entry.default_value) {
-      if (entry.type == FlagType::String) {
-        result += entry.name + " = \"" + entry.getter() + "\"\n";
-      } else {
-        result += entry.name + " = " + entry.getter() + "\n";
-      }
-    }
-  }
-  return result;
+  return SerializeFlags(category, nullptr);
 }
 
 void RegisterChangeCallback(std::string_view name, ChangeCallback callback) {
@@ -646,9 +779,31 @@ void LoadConfig(const std::filesystem::path& config_path) {
     auto config = toml::parse_file(config_path.string());
     ApplyTomlTable(config, "");
     REXLOG_DEBUG("Loaded config from {}", config_path.string());
+    return;
   } catch (const toml::parse_error& err) {
-    REXLOG_ERROR("Failed to parse config {}: {}", config_path.string(), err.what());
+    std::string problem = fmt::format("Config {} isn't valid TOML ({}, line {}) - reading it line by line",
+                                      config_path.string(), err.description(),
+                                      err.source().begin.line);
+    REXLOG_ERROR("{}", problem);
+    GetConfigProblems().push_back(std::move(problem));
   }
+  // Keep every setting that still reads, rather than none.
+  std::vector<size_t> bad_lines =
+      ForEachConfigLine(config_path, [](const toml::table& line, const std::string& table) {
+        ApplyTomlTable(line, table);
+      });
+  for (size_t line : bad_lines) {
+    std::string problem = fmt::format("Config {}: line {} ignored", config_path.string(), line);
+    REXLOG_ERROR("{}", problem);
+    GetConfigProblems().push_back(std::move(problem));
+  }
+}
+
+void LogConfigProblems() {
+  for (const std::string& problem : GetConfigProblems()) {
+    REXLOG_ERROR("{}", problem);
+  }
+  GetConfigProblems().clear();
 }
 
 void ApplyEnvironment() {
@@ -691,7 +846,25 @@ bool IsFinalized() {
 }
 
 void SaveConfig(const std::filesystem::path& config_path) {
-  std::string content = SerializeToTOML();
+  std::vector<std::string> overridden;
+  std::string content = SerializeFlags(std::nullopt, &overridden);
+  // Flags this launch overrides keep the setting the config already has.
+  if (!overridden.empty() && std::filesystem::exists(config_path)) {
+    ForEachConfigLine(config_path, [&](const toml::table& line, const std::string& table) {
+      if (!table.empty()) {
+        return;
+      }
+      for (const auto& [key, value] : line) {
+        if (std::find(overridden.begin(), overridden.end(), key.str()) == overridden.end()) {
+          continue;
+        }
+        std::string text = FormatTomlValue(value);
+        if (!text.empty()) {
+          content += std::string(key.str()) + " = " + text + "\n";
+        }
+      }
+    });
+  }
   if (content.empty()) {
     REXLOG_DEBUG("SaveConfig: no modified flags to save");
     return;

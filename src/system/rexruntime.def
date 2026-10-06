@@ -123,6 +123,7 @@ EXPORTS
 ?IsD3D12APIAvailable@D3D12Provider@d3d12@ui@rex@@SA_NXZ
 ?IsInThread@XThread@system@rex@@SA_NPEAV123@@Z
 ?LoadConfig@cvar@rex@@YAXAEBVpath@filesystem@std@@@Z
+?LogConfigProblems@cvar@rex@@YAXXZ
 ?LoadGpuPlugin@system@rex@@YA?AV?$unique_ptr@VIGraphicsSystem@system@rex@@U?$default_delete@VIGraphicsSystem@system@rex@@@std@@@std@@V?$basic_string_view@DU?$char_traits@D@std@@@4@0@Z
 ?LoadXexImage@Runtime@rex@@QEAAIV?$basic_string_view@DU?$char_traits@D@std@@@std@@@Z
 ?LookupHeap@Memory@memory@rex@@QEBAPEBVBaseHeap@23@I@Z

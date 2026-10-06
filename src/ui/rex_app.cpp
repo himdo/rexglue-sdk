@@ -178,6 +178,7 @@ bool ReXApp::SetupEnvironment() {
 
   OnPostInitLogging();
 
+  rex::cvar::LogConfigProblems();
   if (std::filesystem::exists(config_path_))
     REXLOG_DEBUG("Loaded config: {}", config_path_.filename().string());
 

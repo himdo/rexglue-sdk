@@ -73,6 +73,7 @@
  * - .range(min, max) - Numeric bounds validation
  * - .allowed({...}) - String enum validation
  * - .debug_only() - Mark as debug-only (for filtering in release UIs)
+ * - .transient() - State the program sets at runtime; never saved to the config
  * - .validator(fn) - Custom validation function
  *
  * @section cvar_query Querying CVars
@@ -120,10 +121,16 @@ namespace rex::cvar {
 //=============================================================================
 
 std::vector<std::string> Init(int argc, char** argv);
+// A config that isn't valid TOML loads line by line: one bad line costs that
+// setting, not all of them.
 void LoadConfig(const std::filesystem::path& config_path);
+// Logs what went wrong loading the config (it loads before logging starts).
+void LogConfigProblems();
 void ApplyEnvironment();
 void FinalizeInit();
 bool IsFinalized();
+// Saves the modified flags. Values from the command line or the environment are
+// one launch's overrides: those flags keep what the config already had.
 void SaveConfig(const std::filesystem::path& config_path);
 
 //=============================================================================
@@ -172,6 +179,7 @@ struct FlagEntry {
   Constraints constraints;
   std::string default_value;
   bool is_debug_only = false;
+  bool is_transient = false;  // State the program sets, never saved to the config
   Source source = Source::kDefault;
 };
 
@@ -299,6 +307,11 @@ struct FlagRegistrar {
 
   FlagRegistrar&& debug_only() && {
     apply_([](FlagEntry& entry) { entry.is_debug_only = true; });
+    return std::move(*this);
+  }
+
+  FlagRegistrar&& transient() && {
+    apply_([](FlagEntry& entry) { entry.is_transient = true; });
     return std::move(*this);
   }
 
