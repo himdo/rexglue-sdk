@@ -36,6 +36,7 @@
 #include <rex/graphics/flags.h>
 #include <rex/graphics/format/dxbc.h>
 #include <rex/graphics/pipeline_util.h>
+#include <rex/graphics/pipeline/material_shaders.h>
 #include <rex/graphics/pipeline/shader/dxbc_translator.h>
 #include <rex/graphics/registers.h>
 #include <rex/graphics/util/draw.h>
@@ -1221,15 +1222,79 @@ bool PipelineCache::TranslateAnalyzedShader(DxbcShaderTranslator& translator,
   }
 
   // Dump shader files if desired.
+  bool edram_rov_used =
+      render_target_cache_.GetPath() == RenderTargetCache::Path::kPixelShaderInterlock;
   if (!REXCVAR_GET(dump_shaders).empty()) {
-    bool edram_rov_used =
-        render_target_cache_.GetPath() == RenderTargetCache::Path::kPixelShaderInterlock;
-    translation.Dump(REXCVAR_GET(dump_shaders), (shader.type() == xenos::ShaderType::kPixel)
-                                                    ? (edram_rov_used ? "d3d12_rov" : "d3d12_rtv")
-                                                    : "d3d12");
+    const char* path_prefix = (shader.type() == xenos::ShaderType::kPixel)
+                                  ? (edram_rov_used ? "d3d12_rov" : "d3d12_rtv")
+                                  : "d3d12";
+    translation.Dump(REXCVAR_GET(dump_shaders), path_prefix);
+    DumpBindings(translation, REXCVAR_GET(dump_shaders), path_prefix);
+  }
+
+  // Material shaders are written for the render target path's outputs.
+  if (translation.is_valid() && material_shaders::IsEnabled() &&
+      (shader.type() != xenos::ShaderType::kPixel || !edram_rov_used)) {
+    std::vector<uint8_t> material_binary;
+    if (material_shaders::Load(shader.ucode_data_hash(), translation.modification(), "d3d12",
+                               "dxbc", material_binary)) {
+      translation.ReplaceTranslatedBinary(std::move(material_binary));
+    }
   }
 
   return translation.is_valid();
+}
+
+void PipelineCache::DumpBindings(const D3D12Shader::D3D12Translation& translation,
+                                 const std::filesystem::path& base_path,
+                                 const char* path_prefix) {
+  // What a material shader replacing this translation must bind the same way:
+  // the guest float constants in the order of xe_float_constants, and the
+  // index in xe_descriptor_indices of each texture and sampler.
+  const D3D12Shader& shader = static_cast<const D3D12Shader&>(translation.shader());
+  static const char* kDimensionNames[] = {"1d", "2d", "3d", "cube"};
+  static const char* kFilterNames[] = {"point", "linear", "basemap", "keep"};
+  static const char* kAnisoFilterNames[] = {"disabled", "1", "2", "4", "8", "16", "keep"};
+  std::string text = fmt::format("shader {:016X} modification {:016X}\n", shader.ucode_data_hash(),
+                                 translation.modification());
+  const Shader::ConstantRegisterMap& constant_map = shader.constant_register_map();
+  if (constant_map.float_dynamic_addressing) {
+    text += "float_constants dynamic\n";
+  } else {
+    text += fmt::format("float_constants {}", constant_map.float_count);
+    for (uint32_t i = 0; i < 256; ++i) {
+      if (constant_map.float_bitmap[i >> 6] & (uint64_t(1) << (i & 63))) {
+        text += fmt::format(" {}", i);
+      }
+    }
+    text += '\n';
+  }
+  const auto& texture_bindings = shader.GetTextureBindingsAfterTranslation();
+  for (size_t i = 0; i < texture_bindings.size(); ++i) {
+    const D3D12Shader::TextureBinding& binding = texture_bindings[i];
+    text += fmt::format("texture {} descriptor={} fetch={} dimension={} signed={}\n", i,
+                        binding.bindless_descriptor_index, binding.fetch_constant,
+                        kDimensionNames[uint32_t(binding.dimension) & 3],
+                        binding.is_signed ? 1 : 0);
+  }
+  const auto& sampler_bindings = shader.GetSamplerBindingsAfterTranslation();
+  for (size_t i = 0; i < sampler_bindings.size(); ++i) {
+    const D3D12Shader::SamplerBinding& binding = sampler_bindings[i];
+    text += fmt::format("sampler {} descriptor={} fetch={} mag={} min={} mip={} aniso={}\n", i,
+                        binding.bindless_descriptor_index, binding.fetch_constant,
+                        kFilterNames[uint32_t(binding.mag_filter) & 3],
+                        kFilterNames[uint32_t(binding.min_filter) & 3],
+                        kFilterNames[uint32_t(binding.mip_filter) & 3],
+                        kAnisoFilterNames[std::min(uint32_t(binding.aniso_filter), 6u)]);
+  }
+  std::filesystem::path path =
+      base_path / fmt::format("shader_{:016X}_{:016X}.{}.bindings.txt", shader.ucode_data_hash(),
+                              translation.modification(), path_prefix);
+  FILE* file = filesystem::OpenFile(path, "w");
+  if (file) {
+    fwrite(text.data(), 1, text.size(), file);
+    fclose(file);
+  }
 }
 
 bool PipelineCache::GetCurrentStateDescription(

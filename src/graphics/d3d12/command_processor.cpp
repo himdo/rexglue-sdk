@@ -23,6 +23,7 @@
 #include <rex/graphics/d3d12/graphics_system.h>
 #include <rex/graphics/d3d12/shader.h>
 #include <rex/graphics/flags.h>
+#include <rex/graphics/pipeline/material_shaders.h>
 #include <rex/graphics/registers.h>
 #include <rex/graphics/util/draw.h>
 #include <rex/graphics/xenos.h>
@@ -4016,6 +4017,30 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
     dirty |=
         system_constants_.edram_blend_constant[3] != regs.Get<float>(XE_GPU_REG_RB_BLEND_ALPHA);
     system_constants_.edram_blend_constant[3] = regs.Get<float>(XE_GPU_REG_RB_BLEND_ALPHA);
+  }
+
+  // Material shaders - the settings, and what the translator would bake in.
+  {
+    uint32_t translation_flags = 0;
+    if (!render_target_cache_->gamma_render_target_as_unorm16()) {
+      translation_flags |= material_shaders::kTranslationFlagGammaRenderTargetAsUnorm8;
+    }
+    if (render_target_cache_->msaa_2x_supported()) {
+      translation_flags |= material_shaders::kTranslationFlagMsaa2xSupported;
+    }
+    if (REXCVAR_GET(use_fuzzy_alpha_epsilon)) {
+      translation_flags |= material_shaders::kTranslationFlagFuzzyAlphaEpsilon;
+    }
+    if (REXCVAR_GET(draw_resolution_scaled_texture_offsets)) {
+      translation_flags |= material_shaders::kTranslationFlagScaledTextureOffsets;
+    }
+    float material_params[material_shaders::kMaterialParamsCount][4];
+    material_shaders::GetParams(material_params, draw_resolution_scale_x, draw_resolution_scale_y,
+                                translation_flags);
+    static_assert(sizeof(material_params) == sizeof(system_constants_.material_params));
+    dirty |= std::memcmp(system_constants_.material_params, material_params,
+                         sizeof(material_params)) != 0;
+    std::memcpy(system_constants_.material_params, material_params, sizeof(material_params));
   }
 
   cbuffer_binding_system_.up_to_date &= !dirty;

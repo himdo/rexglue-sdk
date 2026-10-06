@@ -388,6 +388,11 @@ class DxbcShaderTranslator : public ShaderTranslator {
     // The constant blend factor for the respective modes.
     float edram_blend_constant[4];
 
+    // Not used by the translated shaders - for the material shaders that
+    // replace them (rex/graphics/pipeline/material_shaders.h): the material
+    // settings, and the translation parameters baked into translated shaders.
+    float material_params[4][4];
+
    private:
     friend class DxbcShaderTranslator;
 
@@ -439,6 +444,8 @@ class DxbcShaderTranslator : public ShaderTranslator {
       kEdramRTBlendFactorsOps,
 
       kEdramBlendConstant,
+
+      kMaterialParams,
 
       kCount,
     };
