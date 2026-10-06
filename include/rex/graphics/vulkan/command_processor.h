@@ -32,6 +32,7 @@
 #include <rex/graphics/vulkan/pipeline_cache.h>
 #include <rex/graphics/vulkan/primitive_processor.h>
 #include <rex/graphics/vulkan/render_target_cache.h>
+#include <rex/graphics/vulkan/scene_effects.h>
 #include <rex/graphics/vulkan/shader.h>
 #include <rex/graphics/vulkan/shared_memory.h>
 #include <rex/graphics/vulkan/texture_cache.h>
@@ -610,6 +611,9 @@ class VulkanCommandProcessor : public CommandProcessor {
   std::unique_ptr<VulkanPrimitiveProcessor> primitive_processor_;
 
   std::unique_ptr<VulkanRenderTargetCache> render_target_cache_;
+
+  // Modern graphics effects composited into the host render targets.
+  std::unique_ptr<VulkanSceneEffects> scene_effects_;
 
   std::unique_ptr<VulkanPipelineCache> pipeline_cache_;
 

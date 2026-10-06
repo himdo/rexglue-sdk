@@ -13,10 +13,14 @@
 #include <cctype>
 #include <cinttypes>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include <fmt/format.h>
 
@@ -27,6 +31,7 @@
 #include <rex/graphics/command_processor.h>
 #include <rex/graphics/flags.h>
 #include <rex/graphics/graphics_system.h>
+#include <rex/graphics/pipeline/shader/shader.h>
 #include <rex/graphics/pipeline/texture/info.h>
 #include <rex/graphics/sampler_info.h>
 #include <rex/graphics/xenos.h>
@@ -97,9 +102,187 @@ REXCVAR_DEFINE_BOOL(async_shader_compilation, true, "GPU",
                     "pipelines are being prepared.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_STRING(gpu_frame_log, "", "GPU",
+                      "Write the next frame's render passes, resolves (eDRAM copies) and "
+                      "shader hashes to this file, then clear this setting")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_STRING(gpu_frame_log_constants, "", "GPU",
+                      "With gpu_frame_log: also dump the float shader constants of draws "
+                      "whose pixel shader hash (hex) is in this comma-separated list")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 namespace rex::graphics {
 
 using namespace rex::graphics::xenos;
+
+namespace {
+
+// gpu_frame_log: one frame of render passes, resolves and shaders, for finding
+// where a game's 3D scene ends and its post-processing and UI begin. Only the
+// command processor thread touches this state.
+struct FrameLogPass {
+  std::string target;
+  uint32_t draws = 0;
+  std::map<std::pair<uint64_t, uint64_t>, uint32_t> shaders;  // (vs, ps) -> draws
+  std::vector<std::string> constant_dumps;  // gpu_frame_log_constants
+};
+
+struct FrameLog {
+  bool recording = false;
+  std::string path;
+  std::vector<FrameLogPass> passes;
+};
+
+FrameLog& GetFrameLog() {
+  static FrameLog log;
+  return log;
+}
+
+uint32_t ColorInfoRegister(uint32_t index) {
+  constexpr uint32_t kRegisters[] = {XE_GPU_REG_RB_COLOR_INFO, XE_GPU_REG_RB_COLOR1_INFO,
+                                     XE_GPU_REG_RB_COLOR2_INFO, XE_GPU_REG_RB_COLOR3_INFO};
+  return kRegisters[index & 3];
+}
+
+std::string DescribeRenderTargets(const RegisterFile& regs) {
+  auto surface = regs.Get<reg::RB_SURFACE_INFO>();
+  auto scissor = regs.Get<reg::PA_SC_WINDOW_SCISSOR_BR>();
+  std::string text =
+      fmt::format("pitch={} msaa={}x scissor={}x{}", uint32_t(surface.surface_pitch),
+                  1u << uint32_t(surface.msaa_samples), uint32_t(scissor.br_x),
+                  uint32_t(scissor.br_y));
+  uint32_t color_mask = regs.Get<reg::RB_COLOR_MASK>().value;
+  for (uint32_t i = 0; i < 4; ++i) {
+    if (!((color_mask >> (i * 4)) & 0xF)) {
+      continue;
+    }
+    auto info = regs.Get<reg::RB_COLOR_INFO>(ColorInfoRegister(i));
+    text += fmt::format(" rt{}=fmt{}@{}", i, uint32_t(info.color_format),
+                        info.color_base | (info.color_base_bit_11 << 11));
+  }
+  auto depth_control = regs.Get<reg::RB_DEPTHCONTROL>();
+  if (depth_control.z_enable || depth_control.stencil_enable) {
+    auto depth = regs.Get<reg::RB_DEPTH_INFO>();
+    text += fmt::format(" depth={}@{}{}",
+                        depth.depth_format == DepthRenderTargetFormat::kD24S8 ? "D24S8" : "D24FS8",
+                        depth.depth_base | (depth.depth_base_bit_11 << 11),
+                        depth_control.z_write_enable ? "" : "(read-only)");
+  }
+  return text;
+}
+
+std::string DescribeResolve(const RegisterFile& regs) {
+  auto control = regs.Get<reg::RB_COPY_CONTROL>();
+  auto dest_info = regs.Get<reg::RB_COPY_DEST_INFO>();
+  auto dest_pitch = regs.Get<reg::RB_COPY_DEST_PITCH>();
+  std::string source;
+  if (control.copy_src_select >= 4) {
+    auto depth = regs.Get<reg::RB_DEPTH_INFO>();
+    source = fmt::format("depth@{}", depth.depth_base | (depth.depth_base_bit_11 << 11));
+  } else {
+    auto info = regs.Get<reg::RB_COLOR_INFO>(ColorInfoRegister(control.copy_src_select));
+    source = fmt::format("rt{}=fmt{}@{}", uint32_t(control.copy_src_select),
+                         uint32_t(info.color_format),
+                         info.color_base | (info.color_base_bit_11 << 11));
+  }
+  auto window_offset = regs.Get<reg::PA_SC_WINDOW_OFFSET>();
+  auto scissor_tl = regs.Get<reg::PA_SC_WINDOW_SCISSOR_TL>();
+  auto scissor_br = regs.Get<reg::PA_SC_WINDOW_SCISSOR_BR>();
+  return fmt::format(
+      "RESOLVE {} -> 0x{:08X} {}x{} fmt{}{}{} window_offset={},{} scissor={},{}-{},{}", source,
+      regs.values[XE_GPU_REG_RB_COPY_DEST_BASE], uint32_t(dest_pitch.copy_dest_pitch),
+      uint32_t(dest_pitch.copy_dest_height), uint32_t(dest_info.copy_dest_format),
+      control.color_clear_enable ? " +clear-color" : "",
+      control.depth_clear_enable ? " +clear-depth" : "", int32_t(window_offset.window_x_offset),
+      int32_t(window_offset.window_y_offset), uint32_t(scissor_tl.tl_x),
+      uint32_t(scissor_tl.tl_y), uint32_t(scissor_br.br_x), uint32_t(scissor_br.br_y));
+}
+
+// All 512 float constants (256 vertex, then 256 pixel) as one line each.
+std::string DumpFloatConstants(const RegisterFile& regs, uint64_t pixel_shader_hash) {
+  std::string text = fmt::format("      constants for ps={:016X}:\n", pixel_shader_hash);
+  for (uint32_t i = 0; i < 512; ++i) {
+    const float* c = reinterpret_cast<const float*>(
+        &regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X + i * 4]);
+    if (c[0] == 0.0f && c[1] == 0.0f && c[2] == 0.0f && c[3] == 0.0f) {
+      continue;
+    }
+    text += fmt::format("        {}c{} = {:.6g} {:.6g} {:.6g} {:.6g}\n", i < 256 ? "v" : "p",
+                        i & 255, c[0], c[1], c[2], c[3]);
+  }
+  return text;
+}
+
+void FrameLogRecordDraw(const RegisterFile& regs, const Shader* vertex_shader,
+                        const Shader* pixel_shader) {
+  FrameLog& log = GetFrameLog();
+  if (!log.recording) {
+    return;
+  }
+  bool resolve = regs.Get<reg::RB_MODECONTROL>().edram_mode == EdramMode::kCopy;
+  std::string target = resolve ? DescribeResolve(regs) : DescribeRenderTargets(regs);
+  if (resolve || log.passes.empty() || log.passes.back().target != target) {
+    log.passes.push_back({std::move(target)});
+  }
+  FrameLogPass& pass = log.passes.back();
+  ++pass.draws;
+  if (!resolve) {
+    uint64_t pixel_hash = pixel_shader ? pixel_shader->ucode_data_hash() : 0;
+    ++pass.shaders[{vertex_shader ? vertex_shader->ucode_data_hash() : 0, pixel_hash}];
+    const std::string& wanted = REXCVAR_GET(gpu_frame_log_constants);
+    if (pixel_hash && !wanted.empty() && pass.constant_dumps.size() < 2 &&
+        wanted.find(fmt::format("{:016X}", pixel_hash)) != std::string::npos) {
+      pass.constant_dumps.push_back(DumpFloatConstants(regs, pixel_hash));
+    }
+  }
+}
+
+// Called at each guest frame swap: starts recording when gpu_frame_log is set,
+// and writes the file at the end of the recorded frame.
+void FrameLogOnSwap() {
+  FrameLog& log = GetFrameLog();
+  if (!log.recording) {
+    const std::string& path = REXCVAR_GET(gpu_frame_log);
+    if (!path.empty()) {
+      log.path = path;
+      log.passes.clear();
+      log.recording = true;
+    }
+    return;
+  }
+  log.recording = false;
+  if (std::FILE* file = std::fopen(log.path.c_str(), "w")) {
+    uint32_t total_draws = 0;
+    for (const FrameLogPass& pass : log.passes) {
+      total_draws += pass.draws;
+    }
+    fmt::print(file, "{} passes/resolves, {} draws\n", log.passes.size(), total_draws);
+    for (size_t i = 0; i < log.passes.size(); ++i) {
+      const FrameLogPass& pass = log.passes[i];
+      fmt::print(file, "[{}] draws={} {}\n", i, pass.draws, pass.target);
+      std::vector<std::pair<std::pair<uint64_t, uint64_t>, uint32_t>> shaders(
+          pass.shaders.begin(), pass.shaders.end());
+      std::sort(shaders.begin(), shaders.end(),
+                [](const auto& a, const auto& b) { return a.second > b.second; });
+      for (size_t j = 0; j < shaders.size() && j < 8; ++j) {
+        fmt::print(file, "      vs={:016X} ps={:016X} x{}\n", shaders[j].first.first,
+                   shaders[j].first.second, shaders[j].second);
+      }
+      for (const std::string& dump : pass.constant_dumps) {
+        std::fputs(dump.c_str(), file);
+      }
+    }
+    std::fclose(file);
+    REXGPU_INFO("gpu_frame_log: wrote {} ({} entries)", log.path, log.passes.size());
+  } else {
+    REXGPU_ERROR("gpu_frame_log: could not write {}", log.path);
+  }
+  log.passes.clear();
+  rex::cvar::SetFlagByName("gpu_frame_log", "");
+}
+
+}  // namespace
 
 namespace {
 
@@ -1045,6 +1228,7 @@ bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, ui
   uint32_t frontbuffer_height = reader->ReadAndSwap<uint32_t>();
   reader->AdvanceRead((count - 4) * sizeof(uint32_t));
 
+  FrameLogOnSwap();
   IssueSwap(frontbuffer_ptr, frontbuffer_width, frontbuffer_height);
 
   ++counter_;
@@ -1492,6 +1676,7 @@ bool CommandProcessor::ExecutePacketType3Draw(memory::RingBuffer* reader, uint32
 
       bool major_mode_explicit =
           xenos::IsMajorModeExplicit(vgt_draw_initiator.major_mode, vgt_draw_initiator.prim_type);
+      FrameLogRecordDraw(*register_file_, active_vertex_shader_, active_pixel_shader_);
       draw_succeeded = IssueDraw(vgt_draw_initiator.prim_type, vgt_draw_initiator.num_indices,
                                  is_indexed ? &index_buffer_info : nullptr, major_mode_explicit);
       if (!draw_succeeded) {

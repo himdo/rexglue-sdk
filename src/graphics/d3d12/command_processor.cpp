@@ -941,6 +941,14 @@ bool D3D12CommandProcessor::SetupContext() {
     return false;
   }
 
+  // Optional - the guest renders the same without it.
+  scene_effects_ =
+      std::make_unique<D3D12SceneEffects>(*this, *render_target_cache_, *register_file_);
+  if (!scene_effects_->Initialize()) {
+    REXGPU_WARN("Failed to initialize the scene effects, continuing without them");
+    scene_effects_.reset();
+  }
+
   // Initialize resource binding.
   constant_buffer_pool_ = std::make_unique<ui::d3d12::D3D12UploadBufferPool>(
       provider, std::max(ui::d3d12::D3D12UploadBufferPool::kDefaultPageSize,
@@ -1733,6 +1741,7 @@ void D3D12CommandProcessor::ShutdownContext() {
   }
   constant_buffer_pool_.reset();
 
+  scene_effects_.reset();
   render_target_cache_.reset();
 
   shared_memory_.reset();
@@ -2282,6 +2291,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
   if (edram_mode == xenos::EdramMode::kCopy) {
     // Special copy handling.
     return IssueCopy();
+  }
+
+  if (scene_effects_) {
+    scene_effects_->OnDraw();
   }
 
   bool surface_pitch_is_zero = regs.Get<reg::RB_SURFACE_INFO>().surface_pitch == 0;
@@ -2876,6 +2889,10 @@ bool D3D12CommandProcessor::IssueCopy() {
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
   if (!BeginSubmission(true)) {
     return false;
+  }
+  if (scene_effects_) {
+    scene_effects_->ReleaseCompletedResources();
+    scene_effects_->OnResolve();
   }
   ReadbackResolveMode readback_mode = GetReadbackResolveMode(REXCVAR_GET(d3d12_readback_resolve));
   if (readback_mode == ReadbackResolveMode::kDisabled &&

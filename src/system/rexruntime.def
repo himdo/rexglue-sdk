@@ -5,6 +5,7 @@ EXPORTS
 ??0D3D12DescriptorHeapPool@d3d12@ui@rex@@QEAA@PEAUID3D12Device@@W4D3D12_DESCRIPTOR_HEAP_TYPE@@I@Z
 ??0D3D12UploadBufferPool@d3d12@ui@rex@@QEAA@AEBVD3D12Provider@123@_K@Z
 ??0DebugOverlayDialog@ui@rex@@QEAA@PEAVImGuiDrawer@12@V?$function@$$A6A?AUFrameStats@ui@rex@@XZ@std@@@Z
+??0EffectsDialog@ui@rex@@QEAA@PEAVImGuiDrawer@12@Vpath@filesystem@std@@@Z
 ??0ImGuiDrawer@ui@rex@@QEAA@PEAVWindow@12@_KV?$function@$$A6AXPEAUImFontAtlas@@@Z@std@@V?$function@$$A6AXAEAUImGuiStyle@@AEAUStyle@ui@rex@@@Z@5@@Z
 ??0RingBuffer@memory@rex@@QEAA@PEAE_K@Z
 ??0Runtime@rex@@QEAA@AEBVpath@filesystem@std@@0000@Z

@@ -26,6 +26,7 @@
 #include <rex/ui/overlay/achievements_overlay.h>
 #include <rex/ui/overlay/console_overlay.h>
 #include <rex/ui/overlay/debug_overlay.h>
+#include <rex/ui/overlay/effects_overlay.h>
 #include <rex/ui/overlay/settings_overlay.h>
 #include <rex/audio/audio_system.h>
 #include <rex/audio/sdl/sdl_audio_system.h>
@@ -250,8 +251,8 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
     input_sys->SetActiveCallback([this]() {
       if (window_ && !window_->HasFocus())
         return false;
-      if (!imgui_drawer_ ||
-          (!debug_overlay_ && !console_overlay_ && !settings_overlay_ && !achievements_overlay_))
+      if (!imgui_drawer_ || (!debug_overlay_ && !console_overlay_ && !settings_overlay_ &&
+                             !effects_overlay_ && !achievements_overlay_))
         return true;
       return !imgui_drawer_->GetIO().WantCaptureMouse;
     });
@@ -443,6 +444,13 @@ void ReXApp::SetupOverlays(rex::ui::Presenter* presenter, rex::ui::ImmediateDraw
       settings_overlay_ = std::make_unique<ui::SettingsDialog>(imgui_drawer_.get(), config_path_);
     }
   });
+  rex::ui::RegisterBind("bind_effects_menu", "F6", "Toggle graphics enhancements menu", [this] {
+    if (effects_overlay_) {
+      effects_overlay_.reset();
+    } else {
+      effects_overlay_ = std::make_unique<ui::EffectsDialog>(imgui_drawer_.get(), config_path_);
+    }
+  });
   rex::ui::RegisterBind("bind_achievements", "F7", "Toggle achievements overlay", [this] {
     if (achievements_overlay_) {
       achievements_overlay_.reset();
@@ -588,6 +596,7 @@ void ReXApp::OnDestroy() {
   rex::ui::UnregisterBind("bind_debug_overlay");
   rex::ui::UnregisterBind("bind_console");
   rex::ui::UnregisterBind("bind_settings");
+  rex::ui::UnregisterBind("bind_effects_menu");
   rex::ui::UnregisterBind("bind_achievements");
 
   // ImGui cleanup (reverse of setup)
@@ -599,6 +608,7 @@ void ReXApp::OnDestroy() {
   }
   achievement_notification_.reset();
   achievements_overlay_.reset();
+  effects_overlay_.reset();
   settings_overlay_.reset();
   console_overlay_.reset();
   debug_overlay_.reset();
