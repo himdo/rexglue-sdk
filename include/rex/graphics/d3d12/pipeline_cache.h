@@ -15,6 +15,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -271,6 +272,9 @@ class PipelineCache {
                                IDxbcConverter* dxbc_converter = nullptr,
                                IDxcUtils* dxc_utils = nullptr,
                                IDxcCompiler* dxc_compiler = nullptr);
+  // Writes the bindings a material shader replacing the translation must use.
+  static void DumpBindings(const D3D12Shader::D3D12Translation& translation,
+                           const std::filesystem::path& base_path, const char* path_prefix);
 
   // If draw_util::IsRasterizationPotentiallyDone is false, the pixel shader
   // MUST be made nullptr BEFORE calling this! The shaders must be translated

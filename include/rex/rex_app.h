@@ -50,6 +50,7 @@ struct PathConfig {
 namespace ui {
 class AchievementNotificationDialog;
 class ConsoleDialog;
+class EffectsDialog;
 class SettingsDialog;
 }  // namespace ui
 
@@ -309,6 +310,7 @@ class ReXApp : public ui::WindowedApp, public ui::WindowListener, public ui::Win
   std::unique_ptr<ui::DebugOverlayDialog> debug_overlay_;
   std::unique_ptr<ui::ConsoleDialog> console_overlay_;
   std::unique_ptr<ui::SettingsDialog> settings_overlay_;
+  std::unique_ptr<ui::EffectsDialog> effects_overlay_;
   std::unique_ptr<ui::ImGuiDialog> achievements_overlay_;
   std::shared_ptr<ui::AchievementNotificationDialog> achievement_notification_;
   uint64_t achievement_notification_listener_ = 0;

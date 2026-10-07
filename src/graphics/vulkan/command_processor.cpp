@@ -968,6 +968,14 @@ bool VulkanCommandProcessor::SetupContext() {
     return false;
   }
 
+  // Optional - the guest renders the same without it.
+  scene_effects_ =
+      std::make_unique<VulkanSceneEffects>(*this, *render_target_cache_, *register_file_);
+  if (!scene_effects_->Initialize()) {
+    REXGPU_WARN("Failed to initialize the scene effects, continuing without them");
+    scene_effects_.reset();
+  }
+
   // Shared memory and EDRAM descriptor set layout.
   bool edram_fragment_shader_interlock =
       render_target_cache_->GetPath() == RenderTargetCache::Path::kPixelShaderInterlock;
@@ -2022,6 +2030,7 @@ void VulkanCommandProcessor::ShutdownContext() {
 
   pipeline_cache_.reset();
 
+  scene_effects_.reset();
   render_target_cache_.reset();
 
   primitive_processor_.reset();
@@ -3616,6 +3625,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
     return IssueCopy();
   }
 
+  if (scene_effects_) {
+    scene_effects_->OnDraw();
+  }
+
   bool surface_pitch_is_zero = regs.Get<reg::RB_SURFACE_INFO>().surface_pitch == 0;
 
   const ui::vulkan::VulkanDevice::Properties& device_properties = GetVulkanDevice()->properties();
@@ -4388,6 +4401,10 @@ bool VulkanCommandProcessor::IssueCopy() {
 
   if (!BeginSubmission(true)) {
     return false;
+  }
+  if (scene_effects_) {
+    scene_effects_->ReleaseCompletedResources();
+    scene_effects_->OnResolve();
   }
 
   ReadbackResolveMode readback_mode = GetReadbackResolveMode(REXCVAR_GET(vulkan_readback_resolve));

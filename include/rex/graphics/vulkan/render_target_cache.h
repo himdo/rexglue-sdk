@@ -177,6 +177,9 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
   void RequestPixelShaderInterlockBarrier() override;
 
  private:
+  // Composites into the host render targets before they're resolved.
+  friend class VulkanSceneEffects;
+
   enum class EdramBufferUsage {
     // There's no need for combined fragment and compute usages.
     // With host render targets, the usual usage sequence is as follows:

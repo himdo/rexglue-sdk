@@ -30,8 +30,13 @@
 
 namespace rex::graphics {
 
+class SceneEffects;
+
 class RenderTargetCache {
  public:
+  // Composites into the host render targets before they're resolved.
+  friend class SceneEffects;
+
   // High-level emulation logic implementation path.
   enum class Path {
     // Approximate method using conventional host render targets and copying

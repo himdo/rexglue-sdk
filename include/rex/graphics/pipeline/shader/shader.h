@@ -793,6 +793,14 @@ class Shader {
       host_disassembly_ = std::move(disassembly);
     }
 
+    // Replaces the translated code with a host shader written against the
+    // same bindings (a material shader - see
+    // rex/graphics/pipeline/material_shaders.h).
+    void ReplaceTranslatedBinary(std::vector<uint8_t> binary) {
+      translated_binary_ = std::move(binary);
+      host_disassembly_.clear();
+    }
+
     // For dumping after translation. Dumps the shader's translated code, and,
     // if available, translated disassembly, to files in the given directory
     // based on ucode hash. Returns {binary path, disassembly path if written}.

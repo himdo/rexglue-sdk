@@ -119,6 +119,9 @@ class D3D12RenderTargetCache final : public RenderTargetCache {
   void RequestPixelShaderInterlockBarrier() override;
 
  private:
+  // Composites into the host render targets before they're resolved.
+  friend class D3D12SceneEffects;
+
   enum class EdramBufferModificationStatus {
     // The values are ordered by how strong the barrier conditions are.
     // No uncommitted ROV/UAV writes.

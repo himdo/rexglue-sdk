@@ -29,6 +29,7 @@
 #include <rex/graphics/d3d12/pipeline_cache.h>
 #include <rex/graphics/d3d12/primitive_processor.h>
 #include <rex/graphics/d3d12/render_target_cache.h>
+#include <rex/graphics/d3d12/scene_effects.h>
 #include <rex/graphics/d3d12/shared_memory.h>
 #include <rex/graphics/d3d12/texture_cache.h>
 #include <rex/graphics/pipeline/shader/dxbc.h>
@@ -487,6 +488,9 @@ class D3D12CommandProcessor : public CommandProcessor {
   std::unique_ptr<D3D12SharedMemory> shared_memory_;
 
   std::unique_ptr<D3D12RenderTargetCache> render_target_cache_;
+
+  // Modern screen-space effects composited into the guest's scene (optional).
+  std::unique_ptr<D3D12SceneEffects> scene_effects_;
 
   std::unique_ptr<ui::d3d12::D3D12UploadBufferPool> constant_buffer_pool_;
 

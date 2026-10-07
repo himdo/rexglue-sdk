@@ -24,6 +24,8 @@ set(REXGPU_XENOS_SOURCES
     packet_disassembler.cpp
     primitive_processor.cpp
     pipeline/render_target/cache.cpp
+    pipeline/material_shaders.cpp
+    pipeline/scene_effects.cpp
     shared_memory.cpp
     pipeline/texture/cache.cpp
     pipeline/shader/interpreter.cpp
@@ -50,6 +52,7 @@ set(REXGPU_XENOS_VULKAN_SOURCES
     vulkan/pipeline_cache.cpp
     vulkan/primitive_processor.cpp
     vulkan/render_target_cache.cpp
+    vulkan/scene_effects.cpp
     vulkan/shader.cpp
     vulkan/shared_memory.cpp
     vulkan/texture_cache.cpp
@@ -78,6 +81,7 @@ if(REXGLUE_USE_D3D12)
         d3d12/command_processor.cpp
         d3d12/primitive_processor.cpp
         d3d12/render_target_cache.cpp
+        d3d12/scene_effects.cpp
         d3d12/shader.cpp
         d3d12/shared_memory.cpp
         d3d12/texture_cache.cpp

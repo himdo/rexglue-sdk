@@ -27,6 +27,8 @@ REXCVAR_DEFINE_STRING(test_init_only_flag, "initial", "Test", "Init-only flag")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_BOOL(test_restart_flag, false, "Test", "Requires restart")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_STRING(test_transient_flag, "", "Test", "Set by the program, never saved")
+    .transient();
 
 // Command dispatch test fixtures.
 static int g_noarg_cmd_calls = 0;
@@ -519,6 +521,16 @@ TEST_CASE("cvar TOML serialization", "[cvar]") {
   CHECK(toml.find("test_bool_flag") == std::string::npos);
 }
 
+TEST_CASE("cvar TOML serialization skips transient flags", "[cvar]") {
+  rex::cvar::testing::ResetAllForTesting();
+  REXCVAR_SET(test_transient_flag, "C:\\derived\\state");
+  REXCVAR_SET(test_int32_flag, 5);
+  auto toml = rex::cvar::SerializeToTOML();
+  CHECK(toml.find("test_int32_flag = 5") != std::string::npos);
+  CHECK(toml.find("test_transient_flag") == std::string::npos);
+  rex::cvar::testing::ResetAllForTesting();
+}
+
 TEST_CASE("cvar metadata integration test", "[cvar][integration]") {
   rex::cvar::testing::ResetAllForTesting();
 
@@ -705,6 +717,75 @@ TEST_CASE("cvar SaveConfig", "[cvar]") {
     rex::cvar::SaveConfig(save_path);
     // Either file doesn't exist or is minimal (just header comment)
   }
+}
+
+TEST_CASE("cvar SaveConfig escapes strings", "[cvar]") {
+  rex::cvar::testing::ResetAllForTesting();
+  auto save_path = std::filesystem::temp_directory_path() / "test_save_escaped.toml";
+  const std::string path_value = "C:\\Users\\me\\\"quoted\"\\game";
+  REXCVAR_SET(test_string_flag, path_value);
+  rex::cvar::SaveConfig(save_path);
+
+  rex::cvar::testing::ResetAllForTesting();
+  rex::cvar::LoadConfig(save_path);
+  CHECK(REXCVAR_GET(test_string_flag) == path_value);
+
+  std::filesystem::remove(save_path);
+  rex::cvar::testing::ResetAllForTesting();
+}
+
+TEST_CASE("cvar LoadConfig keeps the readable lines of an invalid config", "[cvar]") {
+  rex::cvar::testing::ResetAllForTesting();
+  auto config_path = std::filesystem::temp_directory_path() / "test_invalid_config.toml";
+  {
+    std::ofstream file(config_path);
+    // As older versions saved a Windows path: "\U" is no valid escape.
+    file << "test_string_flag = \"C:\\Users\\me\"\n";
+    file << "test_int32_flag = 7\n";
+    file << "this line = is not toml at all ]\n";
+    file << "test_bool_flag = true\n";
+  }
+
+  rex::cvar::LoadConfig(config_path);
+  CHECK(REXCVAR_GET(test_string_flag) == "C:\\Users\\me");
+  CHECK(REXCVAR_GET(test_int32_flag) == 7);
+  CHECK(REXCVAR_GET(test_bool_flag) == true);
+  rex::cvar::LogConfigProblems();
+
+  std::filesystem::remove(config_path);
+  rex::cvar::testing::ResetAllForTesting();
+}
+
+TEST_CASE("cvar SaveConfig keeps the config's values for command line overrides", "[cvar]") {
+  rex::cvar::testing::ResetAllForTesting();
+  auto config_path = std::filesystem::temp_directory_path() / "test_save_overrides.toml";
+  {
+    std::ofstream file(config_path);
+    file << "test_int32_flag = 111\n";
+  }
+
+  char argv0[] = "cvar_test";
+  char arg1[] = "--test_int32_flag=333";
+  char arg2[] = "--test_double_flag=9.5";
+  char* argv[] = {argv0, arg1, arg2};
+  rex::cvar::Init(3, argv);
+  rex::cvar::LoadConfig(config_path);
+  REXCVAR_SET(test_bool_flag, true);
+  rex::cvar::SaveConfig(config_path);
+
+  std::string content;
+  {
+    std::ifstream file(config_path);
+    content = std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+  }
+  CHECK(content.find("test_bool_flag = true") != std::string::npos);
+  // The config's own value survives; this launch's overrides aren't saved.
+  CHECK(content.find("test_int32_flag = 111") != std::string::npos);
+  CHECK(content.find("333") == std::string::npos);
+  CHECK(content.find("test_double_flag") == std::string::npos);
+
+  std::filesystem::remove(config_path);
+  rex::cvar::testing::ResetAllForTesting();
 }
 
 TEST_CASE("cvar ApplyEnvironment", "[cvar]") {
