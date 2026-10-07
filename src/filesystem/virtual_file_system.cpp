@@ -15,6 +15,10 @@
 
 #include <rex/filesystem/devices/host_path_entry.h>
 
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
+
 REXCVAR_DEFINE_BOOL(allow_game_relative_writes, false, "Filesystem",
                     "Not useful to non-developers. Allows code to write to paths "
                     "relative to game://. Used for "
@@ -198,6 +202,22 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry, const std::string_view p
                                      FileAction* out_action) {
   // TODO(gibbed): should 'is_directory' remain as a bool or should it be
   // flipped to a generic FileAttributeFlags?
+
+  // [DIAG] Log every file open (guest path) so we can see which assets load.
+  if (const char* _fob = ::getenv("FABLE2_FILEOPEN")) {
+    static std::atomic<uint32_t> _n{0};
+    static FILE* _f = nullptr;
+    if (!_f) {
+      _f = std::fopen("fable2_fileopen.log", "w");
+    }
+    if (_f) {
+      char _line[512];
+      int _len = std::snprintf(_line, sizeof(_line), "%u OPEN %.*s\n", _n.fetch_add(1),
+                               (int)path.size(), path.data());
+      std::fwrite(_line, 1, (size_t)_len, _f);
+      if ((_n & 0x3f) == 0) std::fflush(_f);
+    }
+  }
 
   // Cleanup access.
   if (desired_access & FileAccess::kGenericRead) {

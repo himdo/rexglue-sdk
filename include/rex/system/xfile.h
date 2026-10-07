@@ -25,6 +25,16 @@
 
 namespace rex::system {
 
+// Optional post-read hook for the host application (e.g. the Fable 2
+// recompile). Called after every successful synchronous file read (incl.
+// per-segment reads from ReadScatter) with the VFS path of the file and the
+// host buffer that received the bytes, so the application can inspect or
+// modify the data before the guest sees it. Pass nullptr to clear it.
+// extern "C" so the curated export table (rexruntime.def) can name it.
+extern "C" void RexSetXFilePostReadHook(
+    void (*fn)(const char* path, uint8_t* host_buffer, size_t bytes_read,
+               uint64_t byte_offset));
+
 // https://docs.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_directory_information
 class X_FILE_DIRECTORY_INFORMATION {
  public:
