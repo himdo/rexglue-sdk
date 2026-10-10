@@ -2400,7 +2400,15 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
   }
   if (REXCVAR_GET(async_shader_compilation) &&
       pipeline_cache_->GetD3D12PipelineByHandle(pipeline_handle) == nullptr) {
-    return true;
+    // Skipping the draw leaves objects missing for that frame and corrupts any
+    // texture rendered by the skipped pass, so wait for the pipeline instead.
+    // Only the first use of a pipeline can stall, as without async compilation.
+    if (!REXCVAR_GET(async_pipeline_wait) ||
+        !pipeline_cache_->WaitForPipeline(
+            pipeline_handle,
+            uint32_t(std::max(100, REXCVAR_GET(async_pipeline_wait_timeout_ms))))) {
+      return true;
+    }
   }
 
   // Update the textures - this may bind pipelines.

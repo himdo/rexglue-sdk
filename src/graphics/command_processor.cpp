@@ -97,6 +97,19 @@ REXCVAR_DEFINE_BOOL(async_shader_compilation, true, "GPU",
                     "pipelines are being prepared.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(async_pipeline_wait, true, "GPU",
+                    "When a draw needs a pipeline that is still being created in the background, "
+                    "wait for it instead of skipping the draw. Skipped draws cause missing "
+                    "objects and corrupted textures, at the cost of a short stall the first time "
+                    "a pipeline is needed. Only used with async_shader_compilation.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_INT32(async_pipeline_wait_timeout_ms, 5000, "GPU",
+                     "Longest time, in milliseconds, to wait for one pipeline with "
+                     "async_pipeline_wait before skipping the draw anyway.")
+    .range(100, 60000)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 namespace rex::graphics {
 
 using namespace rex::graphics::xenos;
