@@ -55,6 +55,15 @@ REXCVAR_DEFINE_BOOL(vulkan_readback_memexport, false, "GPU/Vulkan",
                     "Read data written by memory export in shaders on the CPU")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(vulkan_readback_memexport_per_occurrence, true, "GPU/Vulkan",
+                    "With readback_memexport_fast, give every memexport draw to the same "
+                    "address range within a frame its own readback slot, so the Nth export "
+                    "of a frame reads back the Nth export of the previous frame. Without "
+                    "this, the second and later exports to a range in one frame find the "
+                    "previous copy still unsubmitted and fall back to a full synchronous "
+                    "readback, which stalls the GPU thread for the whole frame so far")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(vulkan_async_skip_incomplete_frames, true, "GPU/Vulkan",
                     "When async shader compilation is enabled, skip presenting frames that "
                     "used placeholder pipelines to avoid visible flashing")
@@ -4270,8 +4279,26 @@ bool VulkanCommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
   const VkDevice device = vulkan_device->device();
 
-  const uint64_t readback_key =
+  uint64_t readback_key =
       MakeMemexportReadbackKey(memexport_ranges_.front().base_address_dwords, total_size);
+  if (REXCVAR_GET(vulkan_readback_memexport_per_occurrence)) {
+    // A title can export to the same range several times per frame (Fable II
+    // does, about twice per frame for some ranges). With one slot pair per
+    // range, the second export's "previous" copy is the first export's, still
+    // in the open submission, which forces the full synchronous path on every
+    // frame. Key the slots by the export's ordinal within the frame instead,
+    // so its previous copy is the same export from the last frame, which the
+    // GPU has long finished. The ordinal is capped so a frame that never ends
+    // (no swap, e.g. loading) cannot grow the slot table without bound.
+    constexpr uint32_t kMaxOccurrencesPerFrame = 64;
+    if (memexport_readback_counts_frame_ != frame_current_) {
+      memexport_readback_counts_frame_ = frame_current_;
+      memexport_readback_frame_counts_.clear();
+    }
+    uint32_t occurrence =
+        std::min(memexport_readback_frame_counts_[readback_key]++, kMaxOccurrencesPerFrame - 1);
+    readback_key += uint64_t(occurrence) * UINT64_C(0x9E3779B97F4A7C15);
+  }
   ReadbackBuffer& readback = memexport_readback_buffers_[readback_key];
   readback.last_used_frame = frame_current_;
 
@@ -4703,21 +4730,21 @@ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
 }
 
 void VulkanCommandProcessor::EvictOldReadbackBuffers(
-    std::unordered_map<uint64_t, ReadbackBuffer>& buffer_map) {
+    std::unordered_map<uint64_t, ReadbackBuffer>& buffer_map, size_t max_buffers,
+    uint64_t eviction_age_frames) {
   if (buffer_map.empty()) {
     return;
   }
 
-  const uint64_t eviction_frame_floor = (frame_current_ > kReadbackBufferEvictionAgeFrames)
-                                            ? (frame_current_ - kReadbackBufferEvictionAgeFrames)
-                                            : 0;
+  const uint64_t eviction_frame_floor =
+      (frame_current_ > eviction_age_frames) ? (frame_current_ - eviction_age_frames) : 0;
   const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
   const VkDevice device = vulkan_device->device();
   for (auto it = buffer_map.begin(); it != buffer_map.end();) {
     ReadbackBuffer& readback = it->second;
     bool evict =
-        buffer_map.size() > kMaxReadbackBuffers || readback.last_used_frame < eviction_frame_floor;
+        buffer_map.size() > max_buffers || readback.last_used_frame < eviction_frame_floor;
     if (!evict) {
       ++it;
       continue;
@@ -5231,8 +5258,10 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
       texture_transient_descriptor_sets_used_.pop_front();
     }
 
-    EvictOldReadbackBuffers(readback_buffers_);
-    EvictOldReadbackBuffers(memexport_readback_buffers_);
+    EvictOldReadbackBuffers(readback_buffers_, kMaxReadbackBuffers,
+                            kReadbackBufferEvictionAgeFrames);
+    EvictOldReadbackBuffers(memexport_readback_buffers_, kMaxMemexportReadbackBuffers,
+                            kMemexportReadbackBufferEvictionAgeFrames);
 
     primitive_processor_->BeginFrame();
 

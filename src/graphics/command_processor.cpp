@@ -298,8 +298,19 @@ bool CommandProcessor::ShouldForceReadbackResolve(uint32_t base) const {
 }
 
 bool CommandProcessor::IsReadbackMemexportEnabled(bool legacy_backend_flag) const {
-  if (legacy_readback_memexport_cvar_name_ &&
-      rex::cvar::HasNonDefaultValue(legacy_readback_memexport_cvar_name_)) {
+  // Called for every draw. HasNonDefaultValue takes the cvar registry mutex and
+  // does a string-keyed lookup, so only re-query it now and then; the cvars are
+  // hot-reloadable, and a change still takes effect within a frame or two.
+  constexpr uint32_t kLegacyOverrideRefreshInterval = 1024;
+  static thread_local uint32_t refresh_countdown = 0;
+  static thread_local bool legacy_override = false;
+  if (refresh_countdown == 0) {
+    refresh_countdown = kLegacyOverrideRefreshInterval;
+    legacy_override = legacy_readback_memexport_cvar_name_ &&
+                      rex::cvar::HasNonDefaultValue(legacy_readback_memexport_cvar_name_);
+  }
+  --refresh_countdown;
+  if (legacy_override) {
     return legacy_backend_flag;
   }
   return REXCVAR_GET(readback_memexport);
@@ -471,9 +482,13 @@ void CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
 
   // Volatile for the WAIT_REG_MEM loop.
   const_cast<volatile uint32_t&>(regs.values[index]) = value;
+#ifndef NDEBUG
+  // Diagnostic only, and the lookup is a several-thousand-case switch on the
+  // hottest path of the command processor, so keep it out of release builds.
   if (!regs.GetRegisterInfo(index)) {
     REXGPU_DEBUG("GPU: Write to unknown register ({:04X} = {:08X})", index, value);
   }
+#endif
 
   // Scratch register writeback.
   if (index >= XE_GPU_REG_SCRATCH_REG0 && index <= XE_GPU_REG_SCRATCH_REG7) {
@@ -818,10 +833,15 @@ bool CommandProcessor::ExecutePacketType0(memory::RingBuffer* reader, uint32_t p
 
   uint32_t base_index = (packet & 0x7FFF);
   uint32_t write_one_reg = (packet >> 15) & 0x1;
+  if (!write_one_reg) {
+    // Sequential registers: hand the whole run to the backend, which handles
+    // runs of shader constants in bulk instead of one virtual call each.
+    WriteRegisterRangeFromRing(reader, base_index, count);
+    return true;
+  }
   for (uint32_t m = 0; m < count; m++) {
     uint32_t reg_data = reader->ReadAndSwap<uint32_t>();
-    uint32_t target_index = write_one_reg ? base_index : base_index + m;
-    WriteRegister(target_index, reg_data);
+    WriteRegister(base_index, reg_data);
   }
 
   return true;
