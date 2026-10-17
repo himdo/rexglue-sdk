@@ -72,10 +72,13 @@ endif()
 # type"). The flag must reach lld-link (not clang++), so it is passed via
 # -Xlinker; and the path must be space-free (the project path contains spaces),
 # so it is made relative to the top-level build dir (the linker's working dir).
-file(RELATIVE_PATH REXRUNTIME_DEF_REL "${CMAKE_BINARY_DIR}" "${REXRUNTIME_DEF}")
-set_target_properties(rexruntime PROPERTIES
-    LINK_DEPENDS "${REXRUNTIME_DEF}"
-    LINK_OPTIONS "-Xlinker;/DEF:${REXRUNTIME_DEF_REL}")
+# Windows only: ELF/Mach-O builds export with default visibility.
+if(WIN32)
+    file(RELATIVE_PATH REXRUNTIME_DEF_REL "${CMAKE_BINARY_DIR}" "${REXRUNTIME_DEF}")
+    set_target_properties(rexruntime PROPERTIES
+        LINK_DEPENDS "${REXRUNTIME_DEF}"
+        LINK_OPTIONS "-Xlinker;/DEF:${REXRUNTIME_DEF_REL}")
+endif()
 
 rex_target_pch(rexruntime
     <mutex>
