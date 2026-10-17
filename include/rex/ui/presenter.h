@@ -1039,6 +1039,31 @@ class Presenter {
   // presentation requests to prevent adding arbitrary amounts of latency to it.
   // On Android and GTK, this is not needed, the frame rate of draw events is
   // limited to the display refresh rate internally.
+  // Emulated guest vblank counter (incremented by OnGuestVblank on every
+  // emulated vblank interrupt). This runs at the configured refresh rate
+  // (~60 Hz, or ~1000 Hz when guest_vblank_pacing is off), independent of how
+  // often the game actually renders a frame; reported in the pacer's rate
+  // diagnostic.
+  std::atomic<uint64_t> guest_vblank_count_{0};
+  // Guest frame counter (incremented by RefreshGuestOutput on every rendered
+  // guest frame). This is the game's *actual* render rate (the source of the
+  // F3 FPS counter) and the cadence the pacer (GuestVblankPaceAllows) gates
+  // the host present to.
+  std::atomic<uint64_t> guest_frame_count_{0};
+  // Pacer: at most one host present per rendered guest frame.
+  // `guest_frame_pace_last_count_` is the last-presented guest frame count,
+  // claimed from the UI / guest-output threads via a compare-and-swap.
+  std::atomic<uint64_t> guest_frame_pace_last_count_{0};
+  // Diagnostic rate window (sampled once per second): host presents and
+  // suppressed presents since the window start, plus the guest frame and vblank
+  // counts at the window start (to compute the actual cadences). Benign races;
+  // used only for the rate-limited info log.
+  std::atomic<uint64_t> guest_frame_pace_present_count_{0};
+  std::atomic<uint64_t> guest_frame_pace_suppressed_{0};
+  std::atomic<uint64_t> guest_frame_pace_window_start_ms_{0};
+  std::atomic<uint64_t> guest_frame_pace_window_start_frame_count_{0};
+  std::atomic<uint64_t> guest_frame_pace_window_start_vblank_count_{0};
+
 #if REX_PLATFORM_WIN32
   static Microsoft::WRL::ComPtr<IDXGIOutput> GetDXGIOutputForMonitor(IDXGIFactory1* factory,
                                                                      HMONITOR monitor);
@@ -1074,30 +1099,6 @@ class Presenter {
   std::atomic<uint64_t> vsync_present_gate_last_present_tick_{0};
   std::atomic<uint64_t> vsync_present_gate_suppressed_{0};
   uint64_t vsync_present_gate_last_log_time_ms_ = 0;
-  // Emulated guest vblank counter (incremented by OnGuestVblank on every
-  // emulated vblank interrupt). This runs at the configured refresh rate
-  // (~60 Hz, or ~1000 Hz when guest_vblank_pacing is off), independent of how
-  // often the game actually renders a frame; reported in the pacer's rate
-  // diagnostic.
-  std::atomic<uint64_t> guest_vblank_count_{0};
-  // Guest frame counter (incremented by RefreshGuestOutput on every rendered
-  // guest frame). This is the game's *actual* render rate (the source of the
-  // F3 FPS counter) and the cadence the pacer (GuestVblankPaceAllows) gates
-  // the host present to.
-  std::atomic<uint64_t> guest_frame_count_{0};
-  // Pacer: at most one host present per rendered guest frame.
-  // `guest_frame_pace_last_count_` is the last-presented guest frame count,
-  // claimed from the UI / guest-output threads via a compare-and-swap.
-  std::atomic<uint64_t> guest_frame_pace_last_count_{0};
-  // Diagnostic rate window (sampled once per second): host presents and
-  // suppressed presents since the window start, plus the guest frame and vblank
-  // counts at the window start (to compute the actual cadences). Benign races;
-  // used only for the rate-limited info log.
-  std::atomic<uint64_t> guest_frame_pace_present_count_{0};
-  std::atomic<uint64_t> guest_frame_pace_suppressed_{0};
-  std::atomic<uint64_t> guest_frame_pace_window_start_ms_{0};
-  std::atomic<uint64_t> guest_frame_pace_window_start_frame_count_{0};
-  std::atomic<uint64_t> guest_frame_pace_window_start_vblank_count_{0};
   // If output is null or shutdown is true, the signal may not be sent, either
   // don't limit the frame rate in this case (an exceptional situation, such as
   // a failure to find the output in DXGI), or don't draw at all if the window
