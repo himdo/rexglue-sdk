@@ -1074,6 +1074,30 @@ class Presenter {
   std::atomic<uint64_t> vsync_present_gate_last_present_tick_{0};
   std::atomic<uint64_t> vsync_present_gate_suppressed_{0};
   uint64_t vsync_present_gate_last_log_time_ms_ = 0;
+  // If output is null or shutdown is true, the signal may not be sent, either
+  // don't limit the frame rate in this case (an exceptional situation, such as
+  // a failure to find the output in DXGI), or don't draw at all if the window
+  // was removed from a connected monitor.
+  Microsoft::WRL::ComPtr<IDXGIOutput> dxgi_ui_tick_output_;
+  // To avoid allocating processing resources to the thread when nothing needs
+  // the ticks (not drawing the UI), the thread waits for vertical blanking
+  // intervals only when the UI drawing ticks are needed, and sleeping waiting
+  // for the control condition variable signals otherwise. Modifiable only from
+  // the UI thread, so readable by it without locking the mutex.
+  bool dxgi_ui_ticks_needed_ = false;
+  // The shutdown flag is modifiable only from the UI thread.
+  bool dxgi_ui_tick_thread_shutdown_ = false;
+  bool dxgi_ui_tick_force_requested_ = false;
+
+  std::condition_variable dxgi_ui_tick_control_condition_;
+  // May be signaled by guest output refreshing.
+  std::condition_variable dxgi_ui_tick_signal_condition_;
+
+  std::thread dxgi_ui_tick_thread_;
+#endif  // XE_PLATFORM
+
+  // Guest frame pacing state. Platform-independent: used by OnGuestVblank and
+  // GuestVblankPaceAllows on every backend.
   // Emulated guest vblank counter (incremented by OnGuestVblank on every
   // emulated vblank interrupt). This runs at the configured refresh rate
   // (~60 Hz, or ~1000 Hz when guest_vblank_pacing is off), independent of how
@@ -1098,27 +1122,6 @@ class Presenter {
   std::atomic<uint64_t> guest_frame_pace_window_start_ms_{0};
   std::atomic<uint64_t> guest_frame_pace_window_start_frame_count_{0};
   std::atomic<uint64_t> guest_frame_pace_window_start_vblank_count_{0};
-  // If output is null or shutdown is true, the signal may not be sent, either
-  // don't limit the frame rate in this case (an exceptional situation, such as
-  // a failure to find the output in DXGI), or don't draw at all if the window
-  // was removed from a connected monitor.
-  Microsoft::WRL::ComPtr<IDXGIOutput> dxgi_ui_tick_output_;
-  // To avoid allocating processing resources to the thread when nothing needs
-  // the ticks (not drawing the UI), the thread waits for vertical blanking
-  // intervals only when the UI drawing ticks are needed, and sleeping waiting
-  // for the control condition variable signals otherwise. Modifiable only from
-  // the UI thread, so readable by it without locking the mutex.
-  bool dxgi_ui_ticks_needed_ = false;
-  // The shutdown flag is modifiable only from the UI thread.
-  bool dxgi_ui_tick_thread_shutdown_ = false;
-  bool dxgi_ui_tick_force_requested_ = false;
-
-  std::condition_variable dxgi_ui_tick_control_condition_;
-  // May be signaled by guest output refreshing.
-  std::condition_variable dxgi_ui_tick_signal_condition_;
-
-  std::thread dxgi_ui_tick_thread_;
-#endif  // XE_PLATFORM
 };
 
 }  // namespace ui
