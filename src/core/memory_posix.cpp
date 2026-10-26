@@ -483,6 +483,9 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
     shm_unlink(full_path.c_str());
     return kFileMappingHandleInvalid;
   }
+  // Only the descriptor is used from here on, so drop the name now: the memory is then freed when
+  // the process ends however it ends (a hard exit or kill never reaches CloseFileMappingHandle).
+  shm_unlink(full_path.c_str());
   return static_cast<FileMappingHandle>(ret);
 #endif
 }
