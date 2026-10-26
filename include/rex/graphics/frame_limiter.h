@@ -10,6 +10,7 @@ namespace rex::graphics {
 // advertises a different video mode. Late frames reset the schedule, not burst.
 class FrameLimiter {
  public:
+  using Clock = std::chrono::steady_clock;
   FrameLimiter() = default;
   ~FrameLimiter();
   FrameLimiter(const FrameLimiter&) = delete;
@@ -30,9 +31,12 @@ class FrameLimiter {
     rate_ = frames_per_second;
   }
 
- private:
-  using Clock = std::chrono::steady_clock;
+  // High-resolution wait until a deadline (Windows high-resolution waitable
+  // timer, standard wait fallback). Worker-thread-only, like Pace. Also used
+  // as a short sleep by the WAIT_REG_MEM no-vsync path.
   void WaitUntil(Clock::time_point deadline);
+
+ private:
   void* timer_ = nullptr;
   bool timer_attempted_ = false;
   Clock::time_point previous_{};

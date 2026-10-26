@@ -1675,7 +1675,17 @@ void Presenter::VsyncPresentGateNotePresent() {
 }
 
 bool Presenter::GuestVblankPaceAllows() {
-  if (!REXCVAR_GET(pace_to_guest_vblank)) {
+  // With vsync off there is no host cadence to gate presents against, so
+  // pace them to the guest frame rate by default: at most one present per
+  // guest frame, and continuous UI repaints that carry no new guest frame
+  // are suppressed. Without this, the UI thread presents (and re-upscales)
+  // a full frame on every repaint, pinning the GPU on free-running screens
+  // such as the main menu. When vsync is on, pacing stays opt-in via
+  // `pace_to_guest_vblank` (profiling use).
+  const std::string vsync = rex::cvar::GetFlagByName("vsync");
+  const bool enabled =
+      REXCVAR_GET(pace_to_guest_vblank) || (!vsync.empty() && vsync != "true");
+  if (!enabled) {
     return true;
   }
   // Gate on the guest frame counter (incremented in RefreshGuestOutput once

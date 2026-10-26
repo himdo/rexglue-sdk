@@ -1801,6 +1801,50 @@ void D3D12CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
   }
 }
 
+void D3D12CommandProcessor::OnConstantRegisterRangeWritten(uint32_t start_index,
+                                                           uint32_t end_index) {
+  // Called by the fast dispatch (fast_command_processor.cpp) after it stores a
+  // batch of shader-constant registers directly to the register file. Invalidate
+  // the affected constant cbuffer bindings once per batch instead of per register.
+  // For Fable 2 the vertex float constants (e.g. the MVP) are written every draw,
+  // so this matches the per-register invalidation in WriteRegister above.
+  constexpr uint32_t kFloatBase = XE_GPU_REG_SHADER_CONSTANT_000_X;   // 0x4000
+  constexpr uint32_t kPixelBase = XE_GPU_REG_SHADER_CONSTANT_000_X + 1024;  // 0x4400
+  constexpr uint32_t kVertexFloatEnd = kPixelBase - 1;                  // 0x43FF
+
+  if (frame_open_) {
+    if (end_index >= kFloatBase && start_index <= kVertexFloatEnd) {
+      cbuffer_binding_float_vertex_.up_to_date = false;
+    }
+    if (end_index >= kPixelBase) {
+      cbuffer_binding_float_pixel_.up_to_date = false;
+    }
+  }
+  if (start_index <= XE_GPU_REG_SHADER_CONSTANT_LOOP_31 &&
+      end_index >= XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031) {
+    cbuffer_binding_bool_loop_.up_to_date = false;
+  }
+  if (start_index <= XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5 &&
+      end_index >= XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) {
+    cbuffer_binding_fetch_.up_to_date = false;
+    if (texture_cache_ != nullptr) {
+      uint32_t lo = start_index > XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0
+                        ? start_index - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0
+                        : 0;
+      uint32_t hi = end_index < XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5
+                        ? end_index - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0
+                        : XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5 -
+                              XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0;
+      for (uint32_t t = lo / 6; t * 6 <= hi; ++t) {
+        texture_cache_->TextureFetchConstantWritten(t);
+      }
+      for (uint32_t v = lo / 2; v * 2 <= hi; ++v) {
+        InvalidateVertexBufferResidency(v);
+      }
+    }
+  }
+}
+
 void D3D12CommandProcessor::WriteRegistersFromMem(uint32_t start_index, uint32_t* base,
                                                   uint32_t num_registers) {
   if (!num_registers) {

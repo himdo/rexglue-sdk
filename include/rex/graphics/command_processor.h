@@ -149,6 +149,12 @@ class CommandProcessor {
   virtual void WriteRegistersFromMem(uint32_t start_index, uint32_t* base, uint32_t num_registers);
   virtual void WriteRegisterRangeFromRing(memory::RingBuffer* ring, uint32_t base,
                                           uint32_t num_registers);
+  // Called after a batched write of the constant-register range [start, end].
+  // Default is a no-op; backends that track per-constant state (e.g. the D3D12
+  // cbuffer bindings) override this to invalidate once per batch instead of per
+  // register. A copied fast dispatch (src/renderer/d3d12/fast_command_processor.cpp)
+  // stores the constant range directly and calls this.
+  virtual void OnConstantRegisterRangeWritten(uint32_t start_index, uint32_t end_index) {}
   void WriteALURangeFromRing(memory::RingBuffer* ring, uint32_t base, uint32_t num_registers);
   void WriteFetchRangeFromRing(memory::RingBuffer* ring, uint32_t base, uint32_t num_registers);
   void WriteBoolRangeFromRing(memory::RingBuffer* ring, uint32_t base, uint32_t num_registers);

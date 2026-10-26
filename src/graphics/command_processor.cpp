@@ -46,6 +46,17 @@ REXCVAR_DEFINE_INT32(frame_limit, 0, "GPU",
     .range(0, 240)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_INT32(no_vsync_vblank_hz, 120, "GPU",
+                     "Guest vblank tick rate in Hz while vsync pacing is off "
+                     "(vsync=false, e.g. uncapped launches). Fable 2 waits two "
+                     "guest vblanks per frame, so the per-frame floor is "
+                     "2/hz seconds: 120 Hz is a 60 fps floor (2x native) that "
+                     "keeps free-running loops (the main menu) from pinning "
+                     "the GPU; raise it (hot-reloadable) for a higher cap, "
+                     "1000 restores the original fully-uncapped behavior.")
+    .range(1, 1000000)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(clear_memory_page_state, true, "GPU",
                     "Refresh page-valid state from GPU-written memory at frame end. "
                     "Disable for minor CPU overhead reduction, but may break memory coherency.")
@@ -1048,6 +1059,28 @@ bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, ui
 
   frame_limiter_.Pace(REXCVAR_GET(frame_limit));
 
+  // Diagnostic: per-second guest frame rate (one XE_SWAP per guest frame).
+  // Pairs with the WAIT_REG_MEM long-wait summary: guest fps + wait rate
+  // together show whether a free-running loop is gate-bound or work-bound.
+  {
+    static uint64_t diag_swaps = 0;
+    static auto diag_last_log = std::chrono::steady_clock::now();
+    diag_swaps++;
+    const auto now_log = std::chrono::steady_clock::now();
+    if (now_log - diag_last_log >= std::chrono::seconds(1)) {
+      const auto elapsed_ms =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              now_log - diag_last_log)
+              .count();
+      REXGPU_INFO("Guest frames: {} in {} ms (~{:.1f} fps)", diag_swaps,
+                  elapsed_ms,
+                  1000.0 * static_cast<double>(diag_swaps) /
+                      static_cast<double>(elapsed_ms));
+      diag_swaps = 0;
+      diag_last_log = now_log;
+    }
+  }
+
   // The small guest FPS readout also works in Release, where the full
   // profiling macros compile out. Shared runtime counters feed the F3 UI.
   auto mean_us = guest_frame_meter_.Record(GuestFrameMeter::Clock::now());
@@ -1174,8 +1207,14 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
         }
         PrepareForWait();
         if (!REXCVAR_GET(vsync)) {
-          // User wants it fast and dangerous.
-          rex::thread::MaybeYield();
+          // User wants it fast and dangerous: no long hint-based sleep, but
+          // still take a short high-resolution pause instead of busy-polling.
+          // The waited-on value (a guest-paced vblank counter or flag) only
+          // changes on millisecond scales, so a 1 ms quantum keeps the wait
+          // accurate while the processor thread sleeps instead of spinning
+          // hundreds of thousands of times per second on free-running loops.
+          frame_limiter_.WaitUntil(std::chrono::steady_clock::now() +
+                                   std::chrono::milliseconds(1));
         } else {
           rex::thread::Sleep(std::chrono::milliseconds(wait / 0x100));
         }

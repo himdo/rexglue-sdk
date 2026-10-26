@@ -162,13 +162,19 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
         uint64_t guest_tick_frequency = chrono::Clock::guest_tick_frequency();
         uint64_t vsync_interval_ticks =
             std::max(uint64_t(1), uint64_t(double(guest_tick_frequency) / refresh_rate_hz));
-        uint64_t no_vsync_interval_ticks = std::max(uint64_t(1), guest_tick_frequency / 1000);
         uint64_t last_frame_time = chrono::Clock::QueryGuestTickCount();
         while (vsync_worker_running_) {
           uint64_t current_time = chrono::Clock::QueryGuestTickCount();
+          // No-vsync tick rate is the no_vsync_vblank_hz cvar (hot-reloadable)
+          // so uncapped launches can take a small per-frame floor (Fable 2
+          // waits two vblanks per frame: 250 Hz -> ~125 fps) instead of the
+          // original fixed 1000 Hz fully-uncapped tick rate.
+          uint64_t no_vsync_hz = std::max<uint64_t>(
+              1, static_cast<uint64_t>(REXCVAR_GET(no_vsync_vblank_hz)));
           uint64_t interval_ticks =
               (REXCVAR_GET(vsync) && REXCVAR_GET(guest_vblank_pacing))
-                  ? vsync_interval_ticks : no_vsync_interval_ticks;
+                  ? vsync_interval_ticks
+                  : std::max<uint64_t>(1, guest_tick_frequency / no_vsync_hz);
           while (current_time - last_frame_time >= interval_ticks) {
             MarkVblank();
             last_frame_time += interval_ticks;
