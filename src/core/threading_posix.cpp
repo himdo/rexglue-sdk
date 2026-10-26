@@ -414,8 +414,10 @@ class PosixConditionBase {
       if (timeout == std::chrono::milliseconds::max()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       } else {
-        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - now);
-        auto sleep_time = std::min(remaining, std::chrono::milliseconds(1));
+        // Sleep for the exact time left (up to 1 ms). Truncating to whole milliseconds turned the
+        // last sub-millisecond of every wait into sleep_for(0), i.e. a busy loop.
+        auto remaining = end_time - now;
+        auto sleep_time = std::min<std::chrono::steady_clock::duration>(remaining, std::chrono::milliseconds(1));
         std::this_thread::sleep_for(sleep_time);
       }
     }
