@@ -343,6 +343,51 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
     return true;
   }
 
+  // Fast path: this runs several times per draw, and in the common case every
+  // requested page is already valid. Check that without taking the global
+  // critical region (which guest threads contend on) or allocating. The valid
+  // bits are only read here, one aligned 64-bit word at a time. A page being
+  // invalidated by a guest write concurrently with this check is
+  // indistinguishable from the write landing just after a locked check, which
+  // the next request picks up either way.
+  {
+    bool all_valid = true;
+    for (size_t i = 0; i < count && all_valid; ++i) {
+      uint32_t start = ranges[i].first;
+      uint32_t length = ranges[i].second;
+      if (!length) {
+        continue;
+      }
+      if (start > kBufferSize || (kBufferSize - start) < length) {
+        return false;
+      }
+      if (!EnsureHostGpuMemoryAllocated(start, length)) {
+        return false;
+      }
+      uint32_t page_first = start >> page_size_log2_;
+      uint32_t page_last = (start + length - 1) >> page_size_log2_;
+      uint32_t block_first = page_first >> 6;
+      uint32_t block_last = page_last >> 6;
+      for (uint32_t block = block_first; block <= block_last; ++block) {
+        uint64_t needed = UINT64_MAX;
+        if (block == block_first) {
+          needed &= ~((uint64_t(1) << (page_first & 63)) - 1);
+        }
+        if (block == block_last && (page_last & 63) != 63) {
+          needed &= (uint64_t(1) << ((page_last & 63) + 1)) - 1;
+        }
+        uint64_t valid = __atomic_load_n(&system_page_flags_valid_[block], __ATOMIC_RELAXED);
+        if ((valid & needed) != needed) {
+          all_valid = false;
+          break;
+        }
+      }
+    }
+    if (all_valid) {
+      return true;
+    }
+  }
+
   // Some texture or buffer is empty, for example - safe to draw in this case.
   std::vector<std::pair<uint32_t, uint32_t>> merged_ranges;
   merged_ranges.reserve(count);

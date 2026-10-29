@@ -21,6 +21,17 @@
 #include <rex/system/mmio_handler.h>
 #include <rex/types.h>
 
+#if REX_PLATFORM_LINUX
+#include <sys/mman.h>
+
+#include <cerrno>
+#include <cstdint>
+#ifndef MADV_POPULATE_READ
+#define MADV_POPULATE_READ 22
+#define MADV_POPULATE_WRITE 23
+#endif
+#endif
+
 using namespace rex::arch;
 
 namespace rex::runtime {
@@ -364,6 +375,37 @@ bool MMIOHandler::TryDecodeLoadStore(const uint8_t* p, DecodedLoadStore& decoded
 #endif  // REX_ARCH
 }
 
+#if REX_PLATFORM_LINUX
+namespace {
+// Asks the kernel whether the page containing `address` can currently be read
+// or written, without touching its contents and without parsing
+// /proc/self/maps (which memory::QueryProtect does on Linux, at tens of
+// microseconds per call once the guest heaps have been split into thousands
+// of mappings by write watches). MADV_POPULATE_READ / MADV_POPULATE_WRITE
+// (Linux 5.14+) succeed exactly when the access would not fault.
+// Returns 1 if the access is allowed, 0 if it is not, -1 if the kernel does
+// not support the probe and the caller has to use the slow query.
+int ProbeHostPageAccess(void* address, bool is_write) {
+  static const bool probe_supported = [] {
+    static char probe_target[1];
+    void* page = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(probe_target) &
+                                         ~uintptr_t(memory::page_size() - 1));
+    return madvise(page, memory::page_size(), MADV_POPULATE_WRITE) == 0;
+  }();
+  if (!probe_supported) {
+    return -1;
+  }
+  void* page = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(address) &
+                                       ~uintptr_t(memory::page_size() - 1));
+  int saved_errno = errno;
+  int result = madvise(page, memory::page_size(),
+                       is_write ? MADV_POPULATE_WRITE : MADV_POPULATE_READ);
+  errno = saved_errno;
+  return result == 0 ? 1 : 0;
+}
+}  // namespace
+#endif
+
 bool MMIOHandler::ExceptionCallbackThunk(arch::Exception* ex, void* data) {
   return reinterpret_cast<MMIOHandler*>(data)->ExceptionCallback(ex);
 }
@@ -406,11 +448,21 @@ bool MMIOHandler::ExceptionCallback(arch::Exception* ex) {
     // clears the watch we just hit).
     // Do this under the lock so we don't introduce another race condition.
     auto lock = global_critical_region_.Acquire();
-    memory::PageAccess cur_access;
-    size_t page_length = memory::page_size();
-    memory::QueryProtect(fault_host_address, page_length, cur_access);
-    if (cur_access != memory::PageAccess::kNoAccess &&
-        (!is_write || cur_access != memory::PageAccess::kReadOnly)) {
+    bool access_now_allowed;
+#if REX_PLATFORM_LINUX
+    int probe_result = ProbeHostPageAccess(fault_host_address, is_write);
+    if (probe_result >= 0) {
+      access_now_allowed = probe_result != 0;
+    } else
+#endif
+    {
+      memory::PageAccess cur_access;
+      size_t page_length = memory::page_size();
+      memory::QueryProtect(fault_host_address, page_length, cur_access);
+      access_now_allowed = cur_access != memory::PageAccess::kNoAccess &&
+                           (!is_write || cur_access != memory::PageAccess::kReadOnly);
+    }
+    if (access_now_allowed) {
       // Another thread has cleared this watch. Abort.
       return true;
     }
