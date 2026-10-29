@@ -458,11 +458,24 @@ class VulkanCommandProcessor : public CommandProcessor {
     uint32_t current_index = 0;
     uint64_t last_used_frame = 0;
   };
-  void EvictOldReadbackBuffers(std::unordered_map<uint64_t, ReadbackBuffer>& buffer_map);
+  void EvictOldReadbackBuffers(std::unordered_map<uint64_t, ReadbackBuffer>& buffer_map,
+                               size_t max_buffers, uint64_t eviction_age_frames);
   static constexpr uint32_t kReadbackBufferSizeIncrement = 16 * 1024 * 1024;
+  // Resolve readback buffers can be several megabytes each, so they are
+  // dropped soon after they stop being used.
   static constexpr size_t kMaxReadbackBuffers = 256;
   static constexpr uint64_t kReadbackBufferEvictionAgeFrames = 60;
+  // Memexport readback slots are cheap to keep (most memexport readbacks are a
+  // few hundred bytes) and expensive to lose: the first readback through a new
+  // slot has no previous copy to return, so it takes the full synchronous path
+  // and stalls until the GPU has drained. Keep them long enough to survive a
+  // camera cut away from an object and back, at any frame rate.
+  static constexpr size_t kMaxMemexportReadbackBuffers = 1024;
+  static constexpr uint64_t kMemexportReadbackBufferEvictionAgeFrames = 1800;
   static inline uint32_t AlignReadbackBufferSize(uint32_t size) {
+    if (size < 64 * 1024) {
+      return rex::align(size, 16u * 1024u);
+    }
     if (size < 1 * 1024 * 1024) {
       return rex::align(size, 256u * 1024u);
     }
@@ -755,6 +768,12 @@ class VulkanCommandProcessor : public CommandProcessor {
   uint64_t vertex_buffers_in_sync_[2] = {};
   std::unordered_map<uint64_t, ReadbackBuffer> readback_buffers_;
   std::unordered_map<uint64_t, ReadbackBuffer> memexport_readback_buffers_;
+  // How many memexport readbacks each (address, size) key has had in the frame
+  // memexport_readback_counts_frame_, so that repeated exports to the same
+  // range within a frame each get their own readback slot (see
+  // vulkan_readback_memexport_per_occurrence).
+  std::unordered_map<uint64_t, uint32_t> memexport_readback_frame_counts_;
+  uint64_t memexport_readback_counts_frame_ = 0;
 
   // The current dynamic state of the graphics pipeline bind point. Note that
   // binding any pipeline to the bind point with static state (even if it's
