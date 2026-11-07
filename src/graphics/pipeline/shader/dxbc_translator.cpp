@@ -28,6 +28,11 @@ REXCVAR_DEFINE_BOOL(dxbc_switch, true, "GPU/Shader", "Use switch statements in D
 
 REXCVAR_DEFINE_BOOL(dxbc_source_map, false, "GPU/Shader", "Generate source maps for DXBC");
 
+REXCVAR_DEFINE_BOOL(dxbc_clamp_relative_float_constants, true, "GPU/Shader",
+                    "Clamp relatively addressed float constant indices (c[a0+N], c[aL+N]) to "
+                    "0..255 so an out-of-range index can't read outside the constant buffer "
+                    "(prevents AMD GPU hangs; applied at translation, needs a restart)");
+
 namespace rex::graphics {
 using namespace ucode;
 
@@ -1346,6 +1351,27 @@ dxbc::Src DxbcShaderTranslator::LoadOperand(const InstructionOperand& operand,
         index.index_ = float_constant_index;
       } else {
         assert_true(constant_register_map.float_dynamic_addressing);
+        if (REXCVAR_GET(dxbc_clamp_relative_float_constants)) {
+          // Clamp a0/aL + N to the 256 float constants. The float constant
+          // buffer is a root CBV, which has no bounds checking, and the index
+          // can go out of range (a0 is only clamped to [-256, 255]). A negative
+          // index makes a negative 32-bit byte offset, which AMD hardware adds
+          // to the buffer base as unsigned - base + 4 GB - n, an unmapped
+          // address - so the GPU page faults and the device is removed with
+          // DEVICE_HUNG (seen in Fable II's trail effect on RDNA 3 and 4).
+          uint32_t index_temp = PushSystemTemp();
+          temp_pushed_out = true;
+          dxbc::Dest index_dest(dxbc::Dest::R(index_temp, 0b0001));
+          dxbc::Src index_src(dxbc::Src::R(index_temp, dxbc::Src::kXXXX));
+          dxbc::Src relative_src =
+              operand.storage_addressing_mode == InstructionStorageAddressingMode::kLoopRelative
+                  ? dxbc::Src::R(system_temp_aL_, dxbc::Src::kXXXX)
+                  : dxbc::Src::R(system_temp_ps_pc_p0_a0_, dxbc::Src::kWWWW);
+          a_.OpIAdd(index_dest, relative_src, dxbc::Src::LI(int32_t(operand.storage_index)));
+          a_.OpIMax(index_dest, index_src, dxbc::Src::LI(0));
+          a_.OpIMin(index_dest, index_src, dxbc::Src::LI(255));
+          index = dxbc::Index(index_temp, 0);
+        }
       }
       src = dxbc::Src::CB(cbuffer_index_float_constants_,
                           uint32_t(CbufferRegister::kFloatConstants), index);
