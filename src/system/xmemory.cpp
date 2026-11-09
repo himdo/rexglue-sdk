@@ -476,6 +476,12 @@ void Memory::Copy(uint32_t dest, uint32_t src, uint32_t size) {
   std::memcpy(pdest, psrc, size);
 }
 
+void Memory::InvalidateGpuCopies(uint32_t address, uint32_t size) {
+  BaseHeap* heap = LookupHeap(address);
+  if (!heap || heap->heap_type() != HeapType::kGuestPhysical) return;
+  static_cast<PhysicalHeap*>(heap)->InvalidateGpuCopies(address, size);
+}
+
 uint32_t Memory::SearchAligned(uint32_t start, uint32_t end, const uint32_t* values,
                                size_t value_count) {
   assert_true(start <= end);

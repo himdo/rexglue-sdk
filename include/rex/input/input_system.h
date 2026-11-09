@@ -48,6 +48,11 @@ class InputSystem : public system::IInputSystem {
   X_RESULT SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration);
   X_RESULT GetKeystroke(uint32_t user_index, uint32_t flags, X_INPUT_KEYSTROKE* out_keystroke);
 
+  /// True if the device that most recently produced non-neutral input for the
+  /// given guest user is a synthetic (keyboard/mouse) device; false if the
+  /// active device is a physical pad, or if no device has produced input yet.
+  bool ActiveDeviceIsSynthetic(uint32_t user_index) const;
+
  private:
   /// Re-enumerates every driver and notifies the assignment when the set
   /// changed.

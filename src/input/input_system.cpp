@@ -261,6 +261,12 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
   return X_ERROR_SUCCESS;
 }
 
+bool InputSystem::ActiveDeviceIsSynthetic(uint32_t user_index) const {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  const DeviceInfo* info = DeviceInfoFor(active_devices_.Active(user_index));
+  return info != nullptr && info->synthetic;
+}
+
 X_RESULT InputSystem::SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration) {
   SCOPE_profile_cpu_f("hid");
   std::lock_guard<std::recursive_mutex> lock(mutex_);

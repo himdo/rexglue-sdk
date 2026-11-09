@@ -25,6 +25,7 @@ EXPORTS
 ?AddListener@Window@ui@rex@@QEAAXPEAVWindowListener@23@@Z
 ?AddSink@rex@@YAXV?$shared_ptr@Vsink@sinks@spdlog@@@std@@@Z
 ?AddVirtualMappedRange@Memory@memory@rex@@QEAA_NIIIPEAXP6AI00I@ZP6AX00II@Z@Z
+?ActiveDeviceIsSynthetic@InputSystem@input@rex@@QEBA_NI@Z
 ?AdvanceRead@RingBuffer@memory@rex@@QEAAX_K@Z
 ?Allocate@LinkedTypeDescriptorSetAllocator@vulkan@ui@rex@@QEAAPEAUVkDescriptorSet_T@@PEAUVkDescriptorSetLayout_T@@PEBUVkDescriptorPoolSize@@I@Z
 ?Allocate@SingleLayoutDescriptorSetPool@vulkan@ui@rex@@QEAA_KXZ
@@ -514,3 +515,5 @@ vmaGetAllocationInfo
 ?FlushCsv@perf@rex@@YAXXZ
 ?GetFlagByName@cvar@rex@@YA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$basic_string_view@DU?$char_traits@D@std@@@4@@Z
 ?GetRegistry@cvar@rex@@YAAEAV?$vector@UFlagEntry@cvar@rex@@V?$allocator@UFlagEntry@cvar@rex@@@std@@@std@@XZ
+RexSetXFilePostReadHook
+?InvalidateGpuCopies@Memory@memory@rex@@QEAAXII@Z
