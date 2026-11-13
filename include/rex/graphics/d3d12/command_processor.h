@@ -597,6 +597,30 @@ class D3D12CommandProcessor : public CommandProcessor {
   Microsoft::WRL::ComPtr<ID3D12PipelineState> fxaa_pipeline_;
   Microsoft::WRL::ComPtr<ID3D12PipelineState> fxaa_extreme_pipeline_;
 
+  // Swap colour grade (rex_set_swap_color_grade), in place after the gamma
+  // pass. Needs typed UAV loads of the destination format.
+  struct ColorGradeConstants {
+    uint32_t size[2];
+    float contrast;
+    float gamma;
+    float row_r[4];
+    float row_g[4];
+    float row_b[4];
+    float shadows[4];
+    float highlights[4];
+    float fade[4];
+  };
+  enum class ColorGradeRootParameter : UINT {
+    kConstants,
+    kDestination,
+
+    kCount,
+  };
+  Microsoft::WRL::ComPtr<ID3D12RootSignature> color_grade_root_signature_;
+  Microsoft::WRL::ComPtr<ID3D12PipelineState> color_grade_pipeline_;
+  bool color_grade_guest_output_ok_ = false;  // typed UAV load of the output format
+  bool color_grade_fxaa_source_ok_ = false;   // ... and of the FXAA source format
+
   struct ResolveDownscaleConstants {
     uint32_t scale_x;
     uint32_t scale_y;

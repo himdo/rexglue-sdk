@@ -69,6 +69,8 @@ REXCVAR_DEFINE_BOOL(d3d12_submit_on_primary_buffer_end, true, "GPU/D3D12",
                     "Submit command list when PM4 primary buffer ends")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+#include <rex/ui/color_grade.h>
+
 namespace rex::graphics::d3d12 {
 
 // Generated with `xb buildshaders`.
@@ -77,6 +79,7 @@ namespace shaders {
 #include "../shaders/bytecode/d3d12_5_1/apply_gamma_pwl_fxaa_luma_cs.h"
 #include "../shaders/bytecode/d3d12_5_1/apply_gamma_table_cs.h"
 #include "../shaders/bytecode/d3d12_5_1/apply_gamma_table_fxaa_luma_cs.h"
+#include "../shaders/bytecode/d3d12_5_1/color_grade_cs.h"
 #include "../shaders/bytecode/d3d12_5_1/fxaa_cs.h"
 #include "../shaders/bytecode/d3d12_5_1/fxaa_extreme_cs.h"
 #include "../shaders/bytecode/d3d12_5_1/resolve_downscale_cs.h"
@@ -1445,6 +1448,62 @@ bool D3D12CommandProcessor::SetupContext() {
     return false;
   }
 
+  // Swap colour grade (optional: without typed UAV loads it is just skipped).
+  {
+    auto typed_uav_load = [&](DXGI_FORMAT format) {
+      D3D12_FEATURE_DATA_FORMAT_SUPPORT support = {format};
+      return SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support,
+                                                   sizeof(support))) &&
+             (support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD) &&
+             (support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE);
+    };
+    color_grade_guest_output_ok_ = typed_uav_load(ui::d3d12::D3D12Presenter::kGuestOutputFormat);
+    color_grade_fxaa_source_ok_ = typed_uav_load(kFxaaSourceTextureFormat);
+    D3D12_ROOT_PARAMETER color_grade_root_parameters[UINT(ColorGradeRootParameter::kCount)];
+    {
+      D3D12_ROOT_PARAMETER& p =
+          color_grade_root_parameters[UINT(ColorGradeRootParameter::kConstants)];
+      p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+      p.Constants.ShaderRegister = 0;
+      p.Constants.RegisterSpace = 0;
+      p.Constants.Num32BitValues = sizeof(ColorGradeConstants) / sizeof(uint32_t);
+      p.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    }
+    D3D12_DESCRIPTOR_RANGE color_grade_range_dest;
+    color_grade_range_dest.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    color_grade_range_dest.NumDescriptors = 1;
+    color_grade_range_dest.BaseShaderRegister = 0;
+    color_grade_range_dest.RegisterSpace = 0;
+    color_grade_range_dest.OffsetInDescriptorsFromTableStart = 0;
+    {
+      D3D12_ROOT_PARAMETER& p =
+          color_grade_root_parameters[UINT(ColorGradeRootParameter::kDestination)];
+      p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+      p.DescriptorTable.NumDescriptorRanges = 1;
+      p.DescriptorTable.pDescriptorRanges = &color_grade_range_dest;
+      p.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    }
+    D3D12_ROOT_SIGNATURE_DESC color_grade_root_signature_desc;
+    color_grade_root_signature_desc.NumParameters = UINT(ColorGradeRootParameter::kCount);
+    color_grade_root_signature_desc.pParameters = color_grade_root_parameters;
+    color_grade_root_signature_desc.NumStaticSamplers = 0;
+    color_grade_root_signature_desc.pStaticSamplers = nullptr;
+    color_grade_root_signature_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+    *(color_grade_root_signature_.ReleaseAndGetAddressOf()) =
+        ui::d3d12::util::CreateRootSignature(provider, color_grade_root_signature_desc);
+    if (color_grade_root_signature_) {
+      *(color_grade_pipeline_.ReleaseAndGetAddressOf()) = ui::d3d12::util::CreateComputePipeline(
+          device, shaders::color_grade_cs, sizeof(shaders::color_grade_cs),
+          color_grade_root_signature_.Get());
+    }
+    if (!color_grade_pipeline_) {
+      REXGPU_WARN("Swap colour grade unavailable (pipeline creation failed)");
+    } else {
+      REXGPU_INFO("Swap colour grade ready (typed UAV load: output {}, FXAA source {})",
+                  color_grade_guest_output_ok_, color_grade_fxaa_source_ok_);
+    }
+  }
+
   // Resolve downscale compute pipeline for scaled readback resolve.
   D3D12_ROOT_PARAMETER
   resolve_downscale_root_parameters[UINT(ResolveDownscaleRootParameter::kCount)];
@@ -1704,6 +1763,8 @@ void D3D12CommandProcessor::ShutdownContext() {
   fxaa_source_texture_submission_ = 0;
   fxaa_source_texture_.Reset();
 
+  color_grade_pipeline_.Reset();
+  color_grade_root_signature_.Reset();
   fxaa_extreme_pipeline_.Reset();
   fxaa_pipeline_.Reset();
   fxaa_root_signature_.Reset();
@@ -2189,6 +2250,46 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
         uint32_t group_count_x = (guest_output_width + 15) / 16;
         uint32_t group_count_y = (guest_output_height + 7) / 8;
         deferred_command_list_.D3DDispatch(group_count_x, group_count_y, 1);
+
+        // Swap colour grade (photo mode filters), in place on what the gamma
+        // pass just wrote, so FXAA, presentation and screenshots all see it.
+        rex::ui::SwapColorGrade grade;
+        if (color_grade_pipeline_ &&
+            (use_fxaa ? color_grade_fxaa_source_ok_ : color_grade_guest_output_ok_) &&
+            rex_get_swap_color_grade(&grade)) {
+          ui::d3d12::util::DescriptorCpuGpuHandlePair grade_descriptor;
+          if (RequestOneUseSingleViewDescriptors(1, &grade_descriptor)) {
+            device->CreateUnorderedAccessView(apply_gamma_dest, nullptr, &apply_gamma_dest_uav_desc,
+                                              grade_descriptor.first);
+            PushUAVBarrier(apply_gamma_dest);
+            deferred_command_list_.D3DSetComputeRootSignature(color_grade_root_signature_.Get());
+            ColorGradeConstants grade_constants;
+            grade_constants.size[0] = guest_output_width;
+            grade_constants.size[1] = guest_output_height;
+            grade_constants.contrast = grade.contrast;
+            grade_constants.gamma = grade.gamma;
+            std::memcpy(grade_constants.row_r, grade.row_r, sizeof(grade.row_r));
+            std::memcpy(grade_constants.row_g, grade.row_g, sizeof(grade.row_g));
+            std::memcpy(grade_constants.row_b, grade.row_b, sizeof(grade.row_b));
+            std::memcpy(grade_constants.shadows, grade.shadows, sizeof(grade.shadows));
+            std::memcpy(grade_constants.highlights, grade.highlights, sizeof(grade.highlights));
+            std::memcpy(grade_constants.fade, grade.fade, sizeof(grade.fade));
+            deferred_command_list_.D3DSetComputeRoot32BitConstants(
+                UINT(ColorGradeRootParameter::kConstants),
+                sizeof(grade_constants) / sizeof(uint32_t), &grade_constants, 0);
+            deferred_command_list_.D3DSetComputeRootDescriptorTable(
+                UINT(ColorGradeRootParameter::kDestination), grade_descriptor.second);
+            SetExternalPipeline(color_grade_pipeline_.Get());
+            SubmitBarriers();
+            deferred_command_list_.D3DDispatch(group_count_x, group_count_y, 1);
+            static bool grade_logged = false;
+            if (!grade_logged) {
+              grade_logged = true;
+              REXGPU_INFO("Swap colour grade applied ({}x{}, {})", guest_output_width,
+                          guest_output_height, use_fxaa ? "FXAA source" : "guest output");
+            }
+          }
+        }
 
         // Apply FXAA.
         if (use_fxaa) {
