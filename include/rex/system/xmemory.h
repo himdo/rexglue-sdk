@@ -322,9 +322,12 @@ class PhysicalHeap : public BaseHeap {
 
   uint32_t GetPhysicalAddress(uint32_t address) const;
 
+  // Drops the GPU's cached copies of a guest physical range so they are
+  // re-uploaded from guest memory on the next reference (see Memory).
+  void InvalidateGpuCopies(uint32_t address, uint32_t size);
+
  protected:
   bool IsHostPageWriteWatched(uint32_t host_page_number) const override;
-  void InvalidateGpuCopies(uint32_t address, uint32_t size);
 
   // Allocation on these heaps delegates to parent_heap_, whose own reconcile
   // pass takes the global critical region. Acquire whenever this heap or its
@@ -422,6 +425,12 @@ class Memory {
 
   // Copies a non-overlapping range of guest memory (like a memcpy).
   void Copy(uint32_t dest, uint32_t src, uint32_t size);
+
+  // Drops the GPU's cached copies of a guest range (textures sampled from it)
+  // so they are re-uploaded from guest memory on the next reference. Used by
+  // the host application to make runtime edits to guest texture pixels take
+  // effect. A no-op for ranges not backed by guest physical memory.
+  void InvalidateGpuCopies(uint32_t address, uint32_t size);
 
   // Searches the given range of guest memory for a run of dword values in
   // big-endian order.

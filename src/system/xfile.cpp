@@ -23,6 +23,24 @@
 
 namespace rex::system {
 
+namespace {
+// Optional post-read override hook (see RexSetXFilePostReadHook in
+// rex/system/xfile.h). Allows the host application to rewrite file bytes in
+// the guest read buffer after they were read (content substitution without
+// touching the files on disk).
+struct XFilePostReadHook {
+  void (*fn)(const char* path, uint8_t* host_buffer, size_t bytes_read,
+             uint64_t byte_offset, uint32_t guest_address) = nullptr;
+};
+XFilePostReadHook g_xfile_post_read_hook;
+}  // namespace
+
+extern "C" void RexSetXFilePostReadHook(
+    void (*fn)(const char* path, uint8_t* host_buffer, size_t bytes_read,
+               uint64_t byte_offset, uint32_t guest_address)) {
+  g_xfile_post_read_hook.fn = fn;
+}
+
 XFile::XFile(KernelState* kernel_state, rex::filesystem::File* file, bool synchronous)
     : XObject(kernel_state, kObjectType), file_(file), is_synchronous_(synchronous) {
   async_event_ = rex::thread::Event::CreateAutoResetEvent(false);
@@ -168,6 +186,15 @@ X_STATUS XFile::ReadInternal(uint32_t buffer_guest_address, uint32_t buffer_leng
               buffer_physical_heap->TriggerCallbacks(
                   rex::thread::global_critical_region::AcquireDirect(), buffer_guest_address,
                   buffer_length, true, true);
+            }
+
+            if (g_xfile_post_read_hook.fn && bytes_read) {
+              uint8_t* host_buffer = buffer_physical_heap
+                  ? memory()->TranslatePhysical(
+                        buffer_physical_heap->GetPhysicalAddress(buffer_guest_address))
+                  : memory()->TranslateVirtual(buffer_guest_address);
+              g_xfile_post_read_hook.fn(path().c_str(), host_buffer, bytes_read, byte_offset,
+                                        buffer_guest_address);
             }
 
             if (byte_offset) {
