@@ -844,6 +844,10 @@ void D3D12TextureCache::WriteActiveTextureBindfulSRV(
     }
   }
   const ui::d3d12::D3D12Provider& provider = command_processor_.GetD3D12Provider();
+  if (IsHdrFrontbufferOverridden(fetch_constant_index, host_shader_binding.is_signed)) {
+    CreateHdrFrontbufferSRV(handle);
+    return;
+  }
   D3D12_CPU_DESCRIPTOR_HANDLE source_handle;
   if (descriptor_index != UINT32_MAX) {
     assert_not_null(texture);
@@ -882,6 +886,16 @@ uint32_t D3D12TextureCache::GetActiveTextureBindlessSRVIndex(
   assert_true(bindless_resources_used_);
   uint32_t descriptor_index = UINT32_MAX;
   uint32_t fetch_constant_index = host_shader_binding.fetch_constant;
+  if (IsHdrFrontbufferOverridden(fetch_constant_index, host_shader_binding.is_signed)) {
+    // A descriptor for this draw only, freed when the submission completes.
+    ui::d3d12::util::DescriptorCpuGpuHandlePair handles;
+    if (command_processor_.RequestOneUseSingleViewDescriptors(1, &handles)) {
+      CreateHdrFrontbufferSRV(handles.first);
+      const ui::d3d12::D3D12Provider& provider = command_processor_.GetD3D12Provider();
+      return uint32_t((handles.first.ptr - command_processor_.GetViewBindlessHeapCPUStart().ptr) /
+                      provider.GetViewDescriptorSize());
+    }
+  }
   const TextureBinding* binding = GetValidTextureBinding(fetch_constant_index);
   if (binding && AreDimensionsCompatible(host_shader_binding.dimension, binding->key.dimension)) {
     bool force_special_view = binding->key.dimension == xenos::DataDimension::k3D &&
@@ -923,6 +937,86 @@ uint32_t D3D12TextureCache::GetActiveTextureBindlessSRVIndex(
     }
   }
   return descriptor_index;
+}
+
+uint32_t D3D12TextureCache::UpdateHdrFrontbufferOverride(uint32_t used_texture_mask,
+                                                         ID3D12Resource* resource, uint32_t address,
+                                                         uint32_t width, uint32_t height) {
+  hdr_frontbuffer_override_mask_previous_ = hdr_frontbuffer_override_mask_;
+  hdr_frontbuffer_override_mask_ = 0;
+  hdr_frontbuffer_override_resource_ = resource;
+  if (!resource || hdr_swap_host_swizzle_ == UINT32_MAX) {
+    return 0;
+  }
+  uint32_t base_page = (address >> 12) & 0x1FFFF;
+  uint32_t remaining = used_texture_mask;
+  uint32_t index;
+  while (rex::bit_scan_forward(remaining, &index)) {
+    remaining &= ~(UINT32_C(1) << index);
+    const TextureBinding* binding = GetValidTextureBinding(index);
+    if (!binding) {
+      continue;
+    }
+    const TextureKey& key = binding->key;
+    if (key.base_page != base_page || key.format != xenos::TextureFormat::k_8_8_8_8 ||
+        key.dimension != xenos::DataDimension::k2DOrStacked || key.GetDepthOrArraySize() != 1 ||
+        key.mip_max_level != 0 || !texture_util::IsAnySignNotSigned(binding->swizzled_signs)) {
+      continue;
+    }
+    // The float16 copy has the host (scaled) size. The guest texture may be
+    // either the scaled resolve or, when the texture cache loaded it from guest
+    // memory, the unscaled 8-bit image; coordinates are normalized, so either
+    // reads the same image (the copy at the higher resolution).
+    uint32_t key_width = key.GetWidth(), key_height = key.GetHeight();
+    bool size_matches = (key_width * draw_resolution_scale_x() == width &&
+                         key_height * draw_resolution_scale_y() == height) ||
+                        (!key.scaled_resolve && key_width == width && key_height == height);
+    if (!size_matches) {
+      if (!hdr_frontbuffer_size_mismatch_logged_) {
+        hdr_frontbuffer_size_mismatch_logged_ = true;
+        REXGPU_WARN(
+            "HDR output: a draw reads the frontbuffer as {}x{} (float16 copy {}x{}); it keeps "
+            "reading the 8-bit copy",
+            key_width, key_height, width, height);
+      }
+      continue;
+    }
+    if (binding->host_swizzle != hdr_swap_host_swizzle_) {
+      if (!hdr_frontbuffer_swizzle_mismatch_logged_) {
+        hdr_frontbuffer_swizzle_mismatch_logged_ = true;
+        REXGPU_WARN(
+            "HDR output: a draw reads the frontbuffer with swizzle {:03X} (the swap uses {:03X}); "
+            "it keeps reading the 8-bit copy",
+            binding->host_swizzle, hdr_swap_host_swizzle_);
+      }
+      continue;
+    }
+    if (!hdr_frontbuffer_override_logged_) {
+      hdr_frontbuffer_override_logged_ = true;
+      REXGPU_INFO(
+          "HDR output: frame feedback: a draw reads the frontbuffer {:08X} (fetch {}); it samples "
+          "the float16 copy",
+          address, index);
+    }
+    hdr_frontbuffer_override_mask_ |= UINT32_C(1) << index;
+  }
+  return hdr_frontbuffer_override_mask_;
+}
+
+void D3D12TextureCache::CreateHdrFrontbufferSRV(D3D12_CPU_DESCRIPTOR_HANDLE handle) const {
+  // Translated shaders sample 2D textures as arrays.
+  D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+  desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+  desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+  desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+  desc.Texture2DArray.MostDetailedMip = 0;
+  desc.Texture2DArray.MipLevels = 1;
+  desc.Texture2DArray.FirstArraySlice = 0;
+  desc.Texture2DArray.ArraySize = 1;
+  desc.Texture2DArray.PlaneSlice = 0;
+  desc.Texture2DArray.ResourceMinLODClamp = 0.0f;
+  command_processor_.GetD3D12Provider().GetDevice()->CreateShaderResourceView(
+      hdr_frontbuffer_override_resource_, &desc, handle);
 }
 
 D3D12TextureCache::SamplerParameters D3D12TextureCache::GetSamplerParameters(
@@ -1390,8 +1484,9 @@ ID3D12Resource* D3D12TextureCache::RequestSwapTexture(D3D12_SHADER_RESOURCE_VIEW
       D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
   srv_desc_out.Format = GetDXGIUnormFormat(key);
   srv_desc_out.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+  hdr_swap_host_swizzle_ = GuestToHostSwizzle(fetch.swizzle, GetHostFormatSwizzle(key));
   srv_desc_out.Shader4ComponentMapping =
-      GuestToHostSwizzle(fetch.swizzle, GetHostFormatSwizzle(key)) |
+      hdr_swap_host_swizzle_ |
       D3D12_SHADER_COMPONENT_MAPPING_ALWAYS_SET_BIT_AVOIDING_ZEROMEM_MISTAKES;
   srv_desc_out.Texture2D.MostDetailedMip = 0;
   srv_desc_out.Texture2D.MipLevels = 1;

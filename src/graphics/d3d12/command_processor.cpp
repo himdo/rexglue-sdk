@@ -1992,6 +1992,17 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
         fetch.dword_0, fetch.dword_1, fetch.dword_2, fetch.dword_3, fetch.dword_4, fetch.dword_5);
     return;
   }
+  // HDR output: present from the float16 copy of the frontbuffer resolve when
+  // the guest frontbuffer was last written from the promoted render target.
+  if (REXCVAR_GET(hdr_output)) {
+    render_target_cache_->SetHdrFrontbufferAddress(frontbuffer_ptr);
+    D3D12_SHADER_RESOURCE_VIEW_DESC hdr_srv_desc;
+    if (ID3D12Resource* hdr_frontbuffer =
+            render_target_cache_->GetHdrFrontbuffer(frontbuffer_ptr, hdr_srv_desc)) {
+      swap_texture_resource = hdr_frontbuffer;
+      swap_texture_srv_desc = hdr_srv_desc;
+    }
+  }
   D3D12_RESOURCE_DESC swap_texture_desc = swap_texture_resource->GetDesc();
   // The swap gamma / FXAA pass samples source texels by pixel index, but swap
   // textures may be allocation-padded. Prefer the active frontbuffer region
@@ -2541,6 +2552,21 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
   {
     REX_FRAME_ZONE_DETAIL(kDrawTextures);
     texture_cache_->RequestTextures(used_texture_mask);
+  }
+  // HDR output frame feedback: draws reading back the last frontbuffer sample
+  // its float16 copy (needs the textures of this draw to be known).
+  if (REXCVAR_GET(hdr_output)) {
+    uint32_t hdr_frontbuffer_address = 0, hdr_frontbuffer_width = 0, hdr_frontbuffer_height = 0;
+    ID3D12Resource* hdr_frontbuffer =
+        REXCVAR_GET(hdr_frontbuffer_feedback)
+            ? render_target_cache_->GetHdrFrontbufferForSampling(
+                  hdr_frontbuffer_address, hdr_frontbuffer_width, hdr_frontbuffer_height)
+            : nullptr;
+    if (texture_cache_->UpdateHdrFrontbufferOverride(used_texture_mask, hdr_frontbuffer,
+                                                     hdr_frontbuffer_address, hdr_frontbuffer_width,
+                                                     hdr_frontbuffer_height)) {
+      render_target_cache_->TransitionHdrFrontbufferForReading();
+    }
   }
 
   // Bind the pipeline after configuring it and doing everything that may bind
@@ -4166,6 +4192,15 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
                                            const D3D12Shader* pixel_shader,
                                            ID3D12RootSignature* root_signature,
                                            bool shared_memory_is_uav) {
+  // HDR output frame feedback: descriptors of a draw that reads the float16
+  // frontbuffer copy (or of the one before) are not described by the texture
+  // keys, so write them again.
+  if (texture_cache_->HdrFrontbufferOverrideNeedsRebind()) {
+    cbuffer_binding_descriptor_indices_vertex_.up_to_date = false;
+    cbuffer_binding_descriptor_indices_pixel_.up_to_date = false;
+    bindful_textures_written_vertex_ = false;
+    bindful_textures_written_pixel_ = false;
+  }
   const ui::d3d12::D3D12Provider& provider = GetD3D12Provider();
   ID3D12Device* device = provider.GetDevice();
   const RegisterFile& regs = *register_file_;
