@@ -10,6 +10,8 @@
  */
 
 #include <algorithm>
+#include <ctime>
+#include <filesystem>
 #include <cstdarg>
 #include <cstring>
 #include <sstream>
@@ -1996,11 +1998,25 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
   // the guest frontbuffer was last written from the promoted render target.
   if (REXCVAR_GET(hdr_output)) {
     render_target_cache_->SetHdrFrontbufferAddress(frontbuffer_ptr);
+    render_target_cache_->UpdateHdrCapture();
     D3D12_SHADER_RESOURCE_VIEW_DESC hdr_srv_desc;
     if (ID3D12Resource* hdr_frontbuffer =
             render_target_cache_->GetHdrFrontbuffer(frontbuffer_ptr, hdr_srv_desc)) {
       swap_texture_resource = hdr_frontbuffer;
       swap_texture_srv_desc = hdr_srv_desc;
+      // hdr_capture: save this swap's float16 frontbuffer, then clear the
+      // request (set it again from the console or a key bind for the next).
+      if (REXCVAR_GET(hdr_capture)) {
+        rex::cvar::SetFlagByName("hdr_capture", "false");
+        std::time_t now = std::time(nullptr);
+        std::tm local_time = {};
+        localtime_s(&local_time, &now);
+        char name[64];
+        std::strftime(name, sizeof(name), "hdr_%Y%m%d_%H%M%S", &local_time);
+        render_target_cache_->RequestHdrCapture(
+            std::filesystem::path(REXCVAR_GET(hdr_capture_path)) /
+            fmt::format("{}_{}.f16", name, hdr_capture_count_++));
+      }
     }
   }
   D3D12_RESOURCE_DESC swap_texture_desc = swap_texture_resource->GetDesc();

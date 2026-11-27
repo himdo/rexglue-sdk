@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <unordered_map>
@@ -69,6 +70,11 @@ class D3D12RenderTargetCache final : public RenderTargetCache {
                                                uint32_t& height_out) const;
   // Makes the float16 frontbuffer copy readable by pixel and non-pixel shaders.
   void TransitionHdrFrontbufferForReading();
+  // HDR output capture (hdr_capture): queue a copy of the float16 frontbuffer
+  // to a file, written once the GPU has finished it (see UpdateHdrCapture).
+  void RequestHdrCapture(const std::filesystem::path& path);
+  // Called once per swap: writes finished captures.
+  void UpdateHdrCapture();
 
   Path GetPath() const override { return path_; }
 
@@ -740,6 +746,13 @@ class D3D12RenderTargetCache final : public RenderTargetCache {
   D3D12_RESOURCE_STATES hdr_frontbuffer_state_ = D3D12_RESOURCE_STATE_COPY_DEST;
   uint32_t hdr_frontbuffer_written_address_ = 0;
   bool hdr_frontbuffer_valid_ = false;
+  struct HdrCapture {
+    Microsoft::WRL::ComPtr<ID3D12Resource> buffer;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+    uint64_t submission = 0;
+    std::filesystem::path path;
+  };
+  std::deque<HdrCapture> hdr_captures_;
   // Replaced copies, released once the GPU is done with the submission.
   std::deque<std::pair<uint64_t, Microsoft::WRL::ComPtr<ID3D12Resource>>> hdr_frontbuffers_retired_;
   std::vector<DumpInvocation> dump_invocations_;

@@ -749,6 +749,8 @@ class D3D12CommandProcessor : public CommandProcessor {
   // current view descriptor heap.
   bool bindful_textures_written_vertex_;
   bool bindful_textures_written_pixel_;
+  // HDR output capture (hdr_capture): numbers the files of a session.
+  uint32_t hdr_capture_count_ = 0;
   bool bindful_samplers_written_vertex_;
   bool bindful_samplers_written_pixel_;
   // Layout UIDs and last texture and sampler bindings written to the current

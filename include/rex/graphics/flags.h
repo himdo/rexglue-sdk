@@ -117,5 +117,7 @@ REXCVAR_DECLARE(bool, d3d12_readback_resolve);
 // HDR output path (pipeline/render_target/cache.cpp)
 REXCVAR_DECLARE(bool, hdr_output);
 REXCVAR_DECLARE(bool, hdr_frontbuffer_feedback);
+REXCVAR_DECLARE(bool, hdr_capture);
+REXCVAR_DECLARE(std::string, hdr_capture_path);
 
 #define XE_GPU_FINE_GRAINED_DRAW_SCOPES 1

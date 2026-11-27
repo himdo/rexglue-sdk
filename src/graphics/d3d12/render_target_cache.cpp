@@ -12,6 +12,9 @@
 #include "thirdparty/dxbc/DXBCChecksum.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <filesystem>
+#include <vector>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -23,6 +26,7 @@
 
 #include <rex/assert.h>
 #include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/graphics/d3d12/command_processor.h>
 #include <rex/graphics/d3d12/deferred_command_list.h>
 #include <rex/graphics/d3d12/render_target_cache.h>
@@ -5710,6 +5714,94 @@ void D3D12RenderTargetCache::TransitionHdrFrontbufferForReading() {
   command_processor_.PushTransitionBarrier(hdr_frontbuffer_.Get(), hdr_frontbuffer_state_,
                                            kReadState);
   hdr_frontbuffer_state_ = kReadState;
+}
+
+void D3D12RenderTargetCache::RequestHdrCapture(const std::filesystem::path& path) {
+  if (!hdr_frontbuffer_valid_ || !hdr_frontbuffer_) {
+    REXGPU_WARN("HDR output: no float16 frontbuffer to capture");
+    return;
+  }
+  const ui::d3d12::D3D12Provider& provider = command_processor_.GetD3D12Provider();
+  ID3D12Device* device = provider.GetDevice();
+  D3D12_RESOURCE_DESC texture_desc = hdr_frontbuffer_->GetDesc();
+  HdrCapture capture;
+  UINT64 total_bytes = 0;
+  device->GetCopyableFootprints(&texture_desc, 0, 1, 0, &capture.footprint, nullptr, nullptr,
+                                &total_bytes);
+  D3D12_RESOURCE_DESC buffer_desc = {};
+  buffer_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+  buffer_desc.Width = total_bytes;
+  buffer_desc.Height = 1;
+  buffer_desc.DepthOrArraySize = 1;
+  buffer_desc.MipLevels = 1;
+  buffer_desc.SampleDesc.Count = 1;
+  buffer_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+  if (FAILED(device->CreateCommittedResource(
+          &ui::d3d12::util::kHeapPropertiesReadback, D3D12_HEAP_FLAG_NONE, &buffer_desc,
+          D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&capture.buffer)))) {
+    REXGPU_ERROR("HDR output: failed to create the capture readback buffer");
+    return;
+  }
+  command_processor_.PushTransitionBarrier(hdr_frontbuffer_.Get(), hdr_frontbuffer_state_,
+                                           D3D12_RESOURCE_STATE_COPY_SOURCE);
+  hdr_frontbuffer_state_ = D3D12_RESOURCE_STATE_COPY_SOURCE;
+  command_processor_.SubmitBarriers();
+  D3D12_TEXTURE_COPY_LOCATION location_dest;
+  location_dest.pResource = capture.buffer.Get();
+  location_dest.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+  location_dest.PlacedFootprint = capture.footprint;
+  D3D12_TEXTURE_COPY_LOCATION location_source;
+  location_source.pResource = hdr_frontbuffer_.Get();
+  location_source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+  location_source.SubresourceIndex = 0;
+  command_processor_.GetDeferredCommandList().D3DCopyTextureRegion(&location_dest, 0, 0, 0,
+                                                                   &location_source, nullptr);
+  TransitionHdrFrontbufferForReading();
+  capture.submission = command_processor_.GetCurrentSubmission();
+  capture.path = path;
+  hdr_captures_.push_back(std::move(capture));
+}
+
+void D3D12RenderTargetCache::UpdateHdrCapture() {
+  uint64_t completed = command_processor_.GetCompletedSubmission();
+  while (!hdr_captures_.empty() && hdr_captures_.front().submission <= completed) {
+    HdrCapture capture = std::move(hdr_captures_.front());
+    hdr_captures_.pop_front();
+    const D3D12_SUBRESOURCE_FOOTPRINT& footprint = capture.footprint.Footprint;
+    uint32_t row_bytes = footprint.Width * 8;
+    std::vector<uint8_t> pixels(size_t(row_bytes) * footprint.Height);
+    void* mapping;
+    D3D12_RANGE read_range = {
+        0, size_t(capture.footprint.Offset) + size_t(footprint.RowPitch) * footprint.Height};
+    if (FAILED(capture.buffer->Map(0, &read_range, &mapping))) {
+      REXGPU_ERROR("HDR output: failed to map the capture readback buffer");
+      continue;
+    }
+    const uint8_t* source = static_cast<const uint8_t*>(mapping) + capture.footprint.Offset;
+    for (uint32_t y = 0; y < footprint.Height; ++y) {
+      std::memcpy(pixels.data() + size_t(row_bytes) * y, source + size_t(footprint.RowPitch) * y,
+                  row_bytes);
+    }
+    D3D12_RANGE written_range = {0, 0};
+    capture.buffer->Unmap(0, &written_range);
+    std::error_code error;
+    std::filesystem::create_directories(capture.path.parent_path(), error);
+    FILE* file = filesystem::OpenFile(capture.path, "wb");
+    if (!file) {
+      REXGPU_ERROR("HDR output: failed to write {}", capture.path.string());
+      continue;
+    }
+    // "FHDR16" header (8 bytes), width and height (uint32 each), then the
+    // R16G16B16A16_FLOAT rows as the swap reads them.
+    const char magic[8] = {'F', 'H', 'D', 'R', '1', '6', 0, 0};
+    uint32_t size[2] = {footprint.Width, footprint.Height};
+    fwrite(magic, 1, sizeof(magic), file);
+    fwrite(size, sizeof(uint32_t), 2, file);
+    fwrite(pixels.data(), 1, pixels.size(), file);
+    fclose(file);
+    REXGPU_INFO("HDR output: captured {} ({}x{})", capture.path.string(), footprint.Width,
+                footprint.Height);
+  }
 }
 
 bool D3D12RenderTargetCache::TryResolveCopyDirectly(const draw_util::ResolveInfo& resolve_info,

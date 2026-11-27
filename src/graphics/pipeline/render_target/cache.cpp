@@ -50,6 +50,14 @@ REXCVAR_DEFINE_BOOL(hdr_frontbuffer_feedback, true, "GPU",
                     "32bpp guest copy, so values above 1 survive into the next frame. Only with "
                     "hdr_output on")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(hdr_capture, false, "GPU",
+                    "HDR output path: save the next swap's float16 frontbuffer to a file in "
+                    "hdr_capture_path (\"FHDR16\", width, height, then R16G16B16A16_FLOAT rows), "
+                    "then turn this off again. Only with hdr_output on")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(hdr_capture_path, "hdr_captures", "GPU",
+                      "HDR output path: folder for hdr_capture files")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(direct_host_resolve, true, "GPU",
                     "Resolve from host render targets directly to shared memory when possible")
