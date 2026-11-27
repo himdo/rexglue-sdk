@@ -153,6 +153,21 @@ class D3D12TextureCache final : public TextureCache {
     GetCurrentScaledResolveBuffer().SetUAVBarrierPending();
   }
 
+  // HDR output (hdr_frontbuffer_feedback): guest draws that sample the
+  // frontbuffer the guest resolved last (for instance a cross-fade from the
+  // previous frame) read the render target cache's float16 copy of it instead
+  // of the 32bpp guest copy, for 2D k_8_8_8_8 unsigned fetches of exactly that
+  // texture with the swizzle the swap uses. resource == nullptr disables it.
+  // Call after RequestTextures; returns the fetch constants redirected in this
+  // draw (the caller makes the resource readable when nonzero).
+  uint32_t UpdateHdrFrontbufferOverride(uint32_t used_texture_mask, ID3D12Resource* resource,
+                                        uint32_t address, uint32_t width, uint32_t height);
+  // Whether descriptors written for the previous draw or this one may refer to
+  // the float16 copy, so they must be rewritten.
+  bool HdrFrontbufferOverrideNeedsRebind() const {
+    return hdr_frontbuffer_override_mask_ || hdr_frontbuffer_override_mask_previous_;
+  }
+
   // Returns the ID3D12Resource of the front buffer texture (in
   // NON_PIXEL_SHADER_RESOURCE state), or nullptr in case of failure, and writes
   // the description of its SRV. May call LoadTextureData, so the same
@@ -161,6 +176,22 @@ class D3D12TextureCache final : public TextureCache {
                                      xenos::TextureFormat& format_out,
                                      uint32_t* width_unscaled_out = nullptr,
                                      uint32_t* height_unscaled_out = nullptr);
+
+ private:
+  // HDR output frame feedback (see UpdateHdrFrontbufferOverride).
+  bool IsHdrFrontbufferOverridden(uint32_t fetch_constant_index, bool is_signed) const {
+    return !is_signed && (hdr_frontbuffer_override_mask_ & (UINT32_C(1) << fetch_constant_index));
+  }
+  void CreateHdrFrontbufferSRV(D3D12_CPU_DESCRIPTOR_HANDLE handle) const;
+  ID3D12Resource* hdr_frontbuffer_override_resource_ = nullptr;
+  uint32_t hdr_frontbuffer_override_mask_ = 0;
+  uint32_t hdr_frontbuffer_override_mask_previous_ = 0;
+  // Host swizzle of the last swap's fetch (the float16 copy is the frontbuffer
+  // as the swap sees it), UINT32_MAX before the first swap.
+  uint32_t hdr_swap_host_swizzle_ = UINT32_MAX;
+  bool hdr_frontbuffer_swizzle_mismatch_logged_ = false;
+  bool hdr_frontbuffer_size_mismatch_logged_ = false;
+  bool hdr_frontbuffer_override_logged_ = false;
 
  protected:
   bool IsSignedVersionSeparateForFormat(TextureKey key) const override;

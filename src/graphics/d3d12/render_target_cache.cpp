@@ -5679,15 +5679,37 @@ ID3D12Resource* D3D12RenderTargetCache::GetHdrFrontbuffer(
       address != hdr_frontbuffer_written_address_) {
     return nullptr;
   }
-  command_processor_.PushTransitionBarrier(hdr_frontbuffer_.Get(), hdr_frontbuffer_state_,
-                                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-  hdr_frontbuffer_state_ = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+  TransitionHdrFrontbufferForReading();
   srv_desc_out = {};
   srv_desc_out.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
   srv_desc_out.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
   srv_desc_out.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
   srv_desc_out.Texture2D.MipLevels = 1;
   return hdr_frontbuffer_.Get();
+}
+
+ID3D12Resource* D3D12RenderTargetCache::GetHdrFrontbufferForSampling(uint32_t& address_out,
+                                                                     uint32_t& width_out,
+                                                                     uint32_t& height_out) const {
+  if (!REXCVAR_GET(hdr_output) || !hdr_frontbuffer_valid_ || !hdr_frontbuffer_) {
+    return nullptr;
+  }
+  D3D12_RESOURCE_DESC desc = hdr_frontbuffer_->GetDesc();
+  address_out = hdr_frontbuffer_written_address_;
+  width_out = uint32_t(desc.Width);
+  height_out = desc.Height;
+  return hdr_frontbuffer_.Get();
+}
+
+void D3D12RenderTargetCache::TransitionHdrFrontbufferForReading() {
+  constexpr D3D12_RESOURCE_STATES kReadState =
+      D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+  if (!hdr_frontbuffer_) {
+    return;
+  }
+  command_processor_.PushTransitionBarrier(hdr_frontbuffer_.Get(), hdr_frontbuffer_state_,
+                                           kReadState);
+  hdr_frontbuffer_state_ = kReadState;
 }
 
 bool D3D12RenderTargetCache::TryResolveCopyDirectly(const draw_util::ResolveInfo& resolve_info,

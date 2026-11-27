@@ -44,6 +44,12 @@ REXCVAR_DEFINE_BOOL(hdr_output, false, "GPU",
                     "above 1 written by a replaced final pass (an HDR shader mod or a host HDR "
                     "pass) reach the presenter. Host render targets path only; D3D12 only")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_BOOL(hdr_frontbuffer_feedback, true, "GPU",
+                    "HDR output path: guest draws that read the last frontbuffer back (such as a "
+                    "cross-fade from the previous frame) sample its float16 copy instead of the "
+                    "32bpp guest copy, so values above 1 survive into the next frame. Only with "
+                    "hdr_output on")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(direct_host_resolve, true, "GPU",
                     "Resolve from host render targets directly to shared memory when possible")

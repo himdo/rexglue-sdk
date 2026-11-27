@@ -63,6 +63,12 @@ class D3D12RenderTargetCache final : public RenderTargetCache {
   // shader reading, or nullptr if the address was last written another way.
   ID3D12Resource* GetHdrFrontbuffer(uint32_t address,
                                     D3D12_SHADER_RESOURCE_VIEW_DESC& srv_desc_out);
+  // HDR output frame feedback: the float16 frontbuffer copy, its guest address
+  // and host size, or nullptr if there is no valid copy. No state change.
+  ID3D12Resource* GetHdrFrontbufferForSampling(uint32_t& address_out, uint32_t& width_out,
+                                               uint32_t& height_out) const;
+  // Makes the float16 frontbuffer copy readable by pixel and non-pixel shaders.
+  void TransitionHdrFrontbufferForReading();
 
   Path GetPath() const override { return path_; }
 
