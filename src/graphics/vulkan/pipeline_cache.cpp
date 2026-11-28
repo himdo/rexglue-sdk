@@ -949,6 +949,15 @@ SpirvShaderTranslator::Modification VulkanPipelineCache::GetCurrentVertexShaderM
     modification.vertex.user_clip_plane_cull = 0;
   }
   modification.vertex.user_clip_plane_count = rex::bit_count(user_clip_planes);
+  // depth_float24_absolute_polygon_offset: the guest's near and far planes as
+  // two more user clip planes (depth clamping instead of clipping for the
+  // draw).
+  if (!pa_cl_clip_cntl.clip_disable &&
+      draw_util::IsFloat24PolygonOffsetAbsolute(
+          regs, render_target_cache_.GetPath() == RenderTargetCache::Path::kHostRenderTargets,
+          device_properties.depthClamp && device_properties.shaderClipDistance)) {
+    modification.vertex.user_clip_plane_count += 2;
+  }
   modification.vertex.point_ps_ucp_mode = pa_cl_clip_cntl.ps_ucp_mode;
 
   if (host_vertex_shader_type == Shader::HostVertexShaderType::kPointListAsTriangleStrip) {
@@ -1469,7 +1478,11 @@ bool VulkanPipelineCache::GetCurrentStateDescription(
   description_out.primitive_restart = primitive_processing_result.host_primitive_reset_enabled;
 
   description_out.depth_clamp_enable =
-      device_properties.depthClamp && regs.Get<reg::PA_CL_CLIP_CNTL>().clip_disable;
+      device_properties.depthClamp &&
+      (regs.Get<reg::PA_CL_CLIP_CNTL>().clip_disable ||
+       draw_util::IsFloat24PolygonOffsetAbsolute(
+           regs, render_target_cache_.GetPath() == RenderTargetCache::Path::kHostRenderTargets,
+           device_properties.shaderClipDistance));
 
   // Tessellated draws are patch-domain polygonal primitives regardless of guest
   // register ambiguity in non-explicit major mode configurations.

@@ -6731,6 +6731,13 @@ void VulkanCommandProcessor::UpdateDynamicState(const draw_util::ViewportInfo& v
     float depth_bias_constant_factor, depth_bias_slope_factor;
     draw_util::GetPreferredFacePolygonOffset(regs, primitive_polygonal, depth_bias_slope_factor,
                                              depth_bias_constant_factor);
+    // With depth_float24_absolute_polygon_offset, the constant offset is
+    // applied through ndc_offset instead (see UpdateSystemConstantValues).
+    const ui::vulkan::VulkanDevice::Properties& device_properties = GetVulkanDevice()->properties();
+    if (draw_util::IsFloat24PolygonOffsetAbsolute(
+            regs, true, device_properties.depthClamp && device_properties.shaderClipDistance)) {
+      depth_bias_constant_factor = 0.0f;
+    }
     depth_bias_constant_factor *=
         regs.Get<reg::RB_DEPTH_INFO>().depth_format == xenos::DepthRenderTargetFormat::kD24S8
             ? draw_util::kD3D10PolygonOffsetFactorUnorm24
@@ -7148,6 +7155,24 @@ void VulkanCommandProcessor::UpdateSystemConstantValues(
       user_clip_plane_write_ptr += 4;
     }
   }
+  // depth_float24_absolute_polygon_offset: the constant polygon offset is added
+  // to the NDC Z, and the guest's near and far planes follow the guest's own
+  // user clip planes (depth clamping instead of clipping for the draw).
+  const ui::vulkan::VulkanDevice::Properties& float24_device_properties =
+      GetVulkanDevice()->properties();
+  bool float24_polygon_offset_absolute = draw_util::IsFloat24PolygonOffsetAbsolute(
+      regs, render_target_cache_->GetPath() == RenderTargetCache::Path::kHostRenderTargets,
+      float24_device_properties.depthClamp && float24_device_properties.shaderClipDistance);
+  if (float24_polygon_offset_absolute && !pa_cl_clip_cntl.clip_disable) {
+    float depth_clip_planes[2][4];
+    draw_util::GetGuestDepthClipPlanes(regs, depth_clip_planes);
+    float* depth_clip_plane_write_ptr =
+        system_constants_.user_clip_planes[rex::bit_count(pa_cl_clip_cntl.ucp_ena)];
+    if (std::memcmp(depth_clip_plane_write_ptr, depth_clip_planes, sizeof(depth_clip_planes))) {
+      dirty = true;
+      std::memcpy(depth_clip_plane_write_ptr, depth_clip_planes, sizeof(depth_clip_planes));
+    }
+  }
 
   // Tessellation factor range, plus 1.0 according to
   // https://www.slideshare.net/blackdevilvikas/next-generation-graphics-programming-on-xbox-360.
@@ -7159,11 +7184,18 @@ void VulkanCommandProcessor::UpdateSystemConstantValues(
   system_constants_.tessellation_factor_range_max = tessellation_factor_max;
 
   // Conversion to host normalized device coordinates.
+  // With the guest's constant polygon offset as an absolute Z offset if
+  // depth_float24_absolute_polygon_offset applies.
+  float ndc_offset[3] = {viewport_info.ndc_offset[0], viewport_info.ndc_offset[1],
+                         viewport_info.ndc_offset[2]};
+  if (float24_polygon_offset_absolute) {
+    ndc_offset[2] += draw_util::GetFloat24AbsolutePolygonOffsetNdcZ(regs, viewport_info);
+  }
   for (uint32_t i = 0; i < 3; ++i) {
     dirty |= system_constants_.ndc_scale[i] != viewport_info.ndc_scale[i];
-    dirty |= system_constants_.ndc_offset[i] != viewport_info.ndc_offset[i];
+    dirty |= system_constants_.ndc_offset[i] != ndc_offset[i];
     system_constants_.ndc_scale[i] = viewport_info.ndc_scale[i];
-    system_constants_.ndc_offset[i] = viewport_info.ndc_offset[i];
+    system_constants_.ndc_offset[i] = ndc_offset[i];
   }
 
   // Point size.
