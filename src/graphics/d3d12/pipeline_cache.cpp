@@ -837,6 +837,14 @@ DxbcShaderTranslator::Modification PipelineCache::GetCurrentVertexShaderModifica
   modification.vertex.user_clip_plane_count = rex::bit_count(user_clip_planes);
   modification.vertex.user_clip_plane_cull =
       uint32_t(user_clip_planes && pa_cl_clip_cntl.ucp_cull_only_ena);
+  // depth_float24_absolute_polygon_offset: the guest's near and far planes as
+  // two more user clip planes (host depth clipping is off for the draw).
+  if (!pa_cl_clip_cntl.clip_disable &&
+      draw_util::IsFloat24PolygonOffsetAbsolute(
+          regs, render_target_cache_.GetPath() == RenderTargetCache::Path::kHostRenderTargets,
+          true)) {
+    modification.vertex.user_clip_plane_count += 2;
+  }
   modification.vertex.point_ps_ucp_mode = pa_cl_clip_cntl.ps_ucp_mode;
   modification.vertex.vertex_kill_and = uint32_t(
       (shader.writes_point_size_edge_flag_kill_vertex() & 0b100) && !pa_cl_clip_cntl.vtx_kill_or);
@@ -1424,6 +1432,11 @@ bool PipelineCache::GetCurrentStateDescription(
     float polygon_offset, polygon_offset_scale;
     draw_util::GetPreferredFacePolygonOffset(regs, primitive_polygonal, polygon_offset_scale,
                                              polygon_offset);
+    // With depth_float24_absolute_polygon_offset, the constant offset is
+    // applied through ndc_offset instead (see UpdateSystemConstantValues).
+    if (draw_util::IsFloat24PolygonOffsetAbsolute(regs, true, true)) {
+      polygon_offset = 0.0f;
+    }
     description_out.depth_bias = draw_util::GetD3D10IntegerPolygonOffset(
         regs.Get<reg::RB_DEPTH_INFO>().depth_format, polygon_offset);
     description_out.depth_bias_slope_scaled =
@@ -1434,7 +1447,12 @@ bool PipelineCache::GetCurrentStateDescription(
   if (tessellated && REXCVAR_GET(d3d12_tessellation_wireframe)) {
     description_out.fill_mode_wireframe = 1;
   }
-  description_out.depth_clip = !regs.Get<reg::PA_CL_CLIP_CNTL>().clip_disable;
+  // With depth_float24_absolute_polygon_offset, the guest's near and far
+  // planes are clipped against as user clip planes from the Z before the
+  // offset, and the offset depth is clamped (see draw_util).
+  description_out.depth_clip =
+      !regs.Get<reg::PA_CL_CLIP_CNTL>().clip_disable &&
+      !draw_util::IsFloat24PolygonOffsetAbsolute(regs, !edram_rov_used, true);
   bool depth_stencil_bound_and_used = false;
   if (!edram_rov_used) {
     // Depth/stencil. No stencil, always passing depth test and no depth writing

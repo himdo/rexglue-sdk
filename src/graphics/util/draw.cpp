@@ -117,6 +117,55 @@ void GetPreferredFacePolygonOffset(const RegisterFile& regs, bool primitive_poly
   offset_out = offset;
 }
 
+bool IsFloat24PolygonOffsetAbsolute(const RegisterFile& regs, bool host_render_targets_used,
+                                    bool clip_emulation_supported) {
+  if (!REXCVAR_GET(depth_float24_absolute_polygon_offset) || !host_render_targets_used ||
+      !clip_emulation_supported ||
+      regs.Get<reg::RB_DEPTH_INFO>().depth_format != xenos::DepthRenderTargetFormat::kD24FS8 ||
+      !GetNormalizedDepthControl(regs).z_enable) {
+    return false;
+  }
+  auto pa_cl_clip_cntl = regs.Get<reg::PA_CL_CLIP_CNTL>();
+  if (!pa_cl_clip_cntl.clip_disable && pa_cl_clip_cntl.ucp_ena &&
+      (pa_cl_clip_cntl.ucp_cull_only_ena ||
+       rex::bit_count(pa_cl_clip_cntl.ucp_ena) > kFloat24AbsolutePolygonOffsetMaxUserClipPlanes)) {
+    return false;
+  }
+  float polygon_offset_scale, polygon_offset;
+  GetPreferredFacePolygonOffset(regs, IsPrimitivePolygonal(regs), polygon_offset_scale,
+                                polygon_offset);
+  return polygon_offset != 0.0f;
+}
+
+float GetFloat24AbsolutePolygonOffsetNdcZ(const RegisterFile& regs,
+                                          const ViewportInfo& viewport_info) {
+  float polygon_offset_scale, polygon_offset;
+  GetPreferredFacePolygonOffset(regs, IsPrimitivePolygonal(regs), polygon_offset_scale,
+                                polygon_offset);
+  // Host NDC Z [0, 1] maps to [z_min, z_max] (swapped and flipped through
+  // ndc_scale / ndc_offset if the guest range is reversed, so the host depth
+  // still increases with the guest depth). With host render targets, the guest
+  // [0, 1] float24 range is stored as [0, 0.5] (full_float24_in_0_to_1).
+  float host_z_range = std::abs(viewport_info.z_max - viewport_info.z_min);
+  if (!(host_z_range > 0.0f)) {
+    return 0.0f;
+  }
+  return polygon_offset * 0.5f / host_z_range;
+}
+
+void GetGuestDepthClipPlanes(const RegisterFile& regs, float planes_out[2][4]) {
+  // Direct3D clip space: 0 <= Z <= W. OpenGL: -W <= Z <= W.
+  bool dx_clip_space = regs.Get<reg::PA_CL_CLIP_CNTL>().dx_clip_space_def != 0;
+  planes_out[0][0] = 0.0f;
+  planes_out[0][1] = 0.0f;
+  planes_out[0][2] = 1.0f;
+  planes_out[0][3] = dx_clip_space ? 0.0f : 1.0f;
+  planes_out[1][0] = 0.0f;
+  planes_out[1][1] = 0.0f;
+  planes_out[1][2] = -1.0f;
+  planes_out[1][3] = 1.0f;
+}
+
 bool IsPixelShaderNeededWithRasterization(const Shader& shader, const RegisterFile& regs,
                                           bool include_memory_export) {
   assert_true(shader.type() == xenos::ShaderType::kPixel);

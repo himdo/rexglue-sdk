@@ -194,6 +194,44 @@ constexpr float kD3D10PolygonOffsetFactorUnorm24 = float((UINT32_C(1) << 24) - 1
 // needed for remapping 0...1 to 0...0.5.
 constexpr float kD3D10PolygonOffsetFactorFloat24 = float(UINT32_C(1) << (21 + 3));
 
+// The relative host constant depth bias below matches the guest's absolute
+// offset only for primitives whose maximum Z is in [0.5, 1). Closer to 0 it
+// shrinks by 2 per halving of the depth - with reversed depth, which Fable II
+// uses for its shadow maps, the far geometry such as the ground gets a small
+// fraction of the bias the guest asked for, and surfaces facing the light,
+// where the slope term is near 0, self-shadow. The ROV path applies the offset
+// as an absolute value in the pixel shader, as the guest does.
+//
+// With depth_float24_absolute_polygon_offset, on the host render target path,
+// draws with a constant polygon offset into z-enabled float24 depth get the
+// offset as an absolute Z offset added to the host NDC Z in the vertex shader
+// (through ndc_offset), and no host constant depth bias. The slope term stays
+// in the rasterizer, where it's absolute already. Because the offset is then
+// applied before clipping, the host's depth clipping is turned off for these
+// draws, and the guest's near and far planes, from the unshifted Z, are
+// clipped against as two extra user clip planes instead; the shifted depth is
+// clamped to the viewport depth range like the guest clamps it. Not used (the
+// host depth bias is kept) where the planes can't be added: more than 4 guest
+// user clip planes, cull-only user clip planes, or no depth clamp or clip
+// distances on the host (clip_emulation_supported).
+struct ViewportInfo;
+
+constexpr uint32_t kFloat24AbsolutePolygonOffsetMaxUserClipPlanes = 4;
+
+bool IsFloat24PolygonOffsetAbsolute(const RegisterFile& regs, bool host_render_targets_used,
+                                    bool clip_emulation_supported);
+
+// Host NDC Z offset that applies the guest's constant polygon offset as an
+// absolute value, for a draw where IsFloat24PolygonOffsetAbsolute. Uses the
+// depth bounds GetHostViewportInfo returned for the draw.
+float GetFloat24AbsolutePolygonOffsetNdcZ(const RegisterFile& regs,
+                                          const ViewportInfo& viewport_info);
+
+// The guest's near and far clip planes in guest clip space, as user clip
+// planes, for a draw where IsFloat24PolygonOffsetAbsolute and clipping is not
+// disabled.
+void GetGuestDepthClipPlanes(const RegisterFile& regs, float planes_out[2][4]);
+
 inline int32_t GetD3D10IntegerPolygonOffset(xenos::DepthRenderTargetFormat depth_format,
                                             float polygon_offset) {
   bool is_float24 = depth_format == xenos::DepthRenderTargetFormat::kD24FS8;

@@ -19,6 +19,12 @@ REXCVAR_DEFINE_BOOL(native_2x_msaa, true, "GPU", "Enable native 2x MSAA");
 REXCVAR_DEFINE_BOOL(depth_float24_round, false, "GPU", "Round float24 depth values");
 REXCVAR_DEFINE_BOOL(depth_float24_convert_in_pixel_shader, false, "GPU",
                     "Convert float24 depth in pixel shader");
+REXCVAR_DEFINE_BOOL(depth_float24_absolute_polygon_offset, false, "GPU",
+                    "Host render targets: apply the constant polygon offset of draws into float24 "
+                    "depth as an absolute value, as the ROV path does, instead of the host's "
+                    "constant depth bias, which shrinks with the depth value (too little bias "
+                    "near 0, such as on the far side of reversed shadow maps)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(depth_transfer_not_equal_test, true, "GPU",
                     "Use not-equal test for depth transfer");
 REXCVAR_DEFINE_BOOL(gamma_render_target_as_unorm16, true, "GPU",

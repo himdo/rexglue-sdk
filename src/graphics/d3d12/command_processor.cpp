@@ -3932,13 +3932,35 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
       user_clip_plane_write_ptr += 4;
     }
   }
+  // depth_float24_absolute_polygon_offset: the constant polygon offset is added
+  // to the NDC Z, and the guest's near and far planes follow the guest's own
+  // user clip planes (host depth clipping is off for the draw).
+  bool float24_polygon_offset_absolute = draw_util::IsFloat24PolygonOffsetAbsolute(
+      regs, render_target_cache_->GetPath() == RenderTargetCache::Path::kHostRenderTargets, true);
+  if (float24_polygon_offset_absolute && !pa_cl_clip_cntl.clip_disable) {
+    float depth_clip_planes[2][4];
+    draw_util::GetGuestDepthClipPlanes(regs, depth_clip_planes);
+    float* depth_clip_plane_write_ptr =
+        system_constants_.user_clip_planes[rex::bit_count(pa_cl_clip_cntl.ucp_ena)];
+    if (std::memcmp(depth_clip_plane_write_ptr, depth_clip_planes, sizeof(depth_clip_planes))) {
+      dirty = true;
+      std::memcpy(depth_clip_plane_write_ptr, depth_clip_planes, sizeof(depth_clip_planes));
+    }
+  }
 
-  // Conversion to Direct3D 12 normalized device coordinates.
+  // Conversion to Direct3D 12 normalized device coordinates, with the guest's
+  // constant polygon offset as an absolute Z offset if
+  // depth_float24_absolute_polygon_offset applies.
+  float ndc_offset[3] = {viewport_info.ndc_offset[0], viewport_info.ndc_offset[1],
+                         viewport_info.ndc_offset[2]};
+  if (float24_polygon_offset_absolute) {
+    ndc_offset[2] += draw_util::GetFloat24AbsolutePolygonOffsetNdcZ(regs, viewport_info);
+  }
   for (uint32_t i = 0; i < 3; ++i) {
     dirty |= system_constants_.ndc_scale[i] != viewport_info.ndc_scale[i];
-    dirty |= system_constants_.ndc_offset[i] != viewport_info.ndc_offset[i];
+    dirty |= system_constants_.ndc_offset[i] != ndc_offset[i];
     system_constants_.ndc_scale[i] = viewport_info.ndc_scale[i];
-    system_constants_.ndc_offset[i] = viewport_info.ndc_offset[i];
+    system_constants_.ndc_offset[i] = ndc_offset[i];
   }
 
   // Point size.
